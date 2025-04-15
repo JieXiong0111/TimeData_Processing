@@ -1,12 +1,33 @@
+import pymysql
 import pandas as pd
-#import pymysql
+from datetime import datetime
 
-#BM Change
 
-file_path = "C:/Users/jxiong/OneDrive - Simcona Electronics/Documents/Scanning Data Processing/Scanner Sample(advanced).xlsx"
+# Connect to MariaDB
+conn = pymysql.connect(
+    host='172.20.0.166',
+    user='jxiong',
+    password='S1mc0na2025!',
+    database='ScannerData'
+)
 
-sheet_name = "Scanning Data"
-df = pd.read_excel(file_path, sheet_name=sheet_name, header=None, names=["ID", "Input", "InputTime"])
+query = """
+SELECT * FROM Scans
+"""
+df = pd.read_sql(query, conn)
+conn.close()
+
+if 'id' in df.columns:
+    df.drop(columns=['id'], inplace=True)
+
+df.rename(columns={
+'device_sn': 'ID',
+'scanned_data': 'Input',
+'scan_time': 'InputTime'
+}, inplace=True)
+
+#print(df)
+
 
 df['InputTime'] = pd.to_datetime(df['InputTime'].astype(str)) #transform to datetime format
 
@@ -65,7 +86,7 @@ def aggregate_group(group):
     }
 
     # Job Number
-    job = group.loc[group['Input'].str.contains(r'^G\d+', na=False), 'Input']
+    job = group.loc[group['Input'].str.contains(r'^G\d+', na=False), 'Input'] #Assume that the job number starts with 'G'
     result['Job_Number'] = job.iloc[0] if not job.empty else 'NA'
 
     # Sequence
@@ -82,7 +103,7 @@ def aggregate_group(group):
 df = df.groupby(['ID', 'Group'], as_index=False, group_keys=False).apply(aggregate_group)
 
 cleandf = df
-print(cleandf)
+#print(cleandf)
 
 
 #-------------Fill in blank in Sequence---------------

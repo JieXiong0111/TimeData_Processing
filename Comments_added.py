@@ -1,11 +1,33 @@
+import pymysql
 import pandas as pd
-#import pymysql
+from datetime import datetime
 
 
-file_path = "C:/Users/jxiong/OneDrive - Simcona Electronics/Documents/Scanning Data Processing/Scanner Sample(advanced).xlsx"
+# Connect to MariaDB
+conn = pymysql.connect(
+    host='172.20.0.166',
+    user='jxiong',
+    password='S1mc0na2025!',
+    database='ScannerData'
+)
 
-sheet_name = "Scanning Data"
-df = pd.read_excel(file_path, sheet_name=sheet_name, header=None, names=["ID", "Input", "InputTime"])
+query = """
+SELECT * FROM Scans
+"""
+df = pd.read_sql(query, conn)
+conn.close()
+
+if 'id' in df.columns:
+    df.drop(columns=['id'], inplace=True)
+
+df.rename(columns={
+'device_sn': 'ID',
+'scanned_data': 'Input',
+'scan_time': 'InputTime'
+}, inplace=True)
+
+#print(df)
+
 
 df['InputTime'] = pd.to_datetime(df['InputTime'].astype(str)) #transform to datetime format
 
@@ -209,9 +231,9 @@ df['Final_Remark'] = df.apply(combine_remarks, axis=1)
 df.drop(columns=['Remark', 'Remark_EndTime'], inplace=True)
 
 paired_df = df
-#print(paired_df)
+print(paired_df)
 
-paired_df.to_excel("C:/Users/jxiong/OneDrive - Simcona Electronics/Documents/Scanning Data Processing/Comments Added.xlsx", index=False)
+#paired_df.to_excel("C:/Users/jxiong/OneDrive - Simcona Electronics/Documents/Scanning Data Processing/Comments Added.xlsx", index=False)
 
 
 #----------------Duration Calculation---------------------------
