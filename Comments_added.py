@@ -1,6 +1,8 @@
 import pymysql
 import pandas as pd
 from datetime import datetime
+import numpy as np
+
 
 
 # Connect to MariaDB
@@ -26,6 +28,10 @@ df.rename(columns={
 'scan_time': 'InputTime'
 }, inplace=True)
 
+cutoff = datetime(2025, 4, 16, 12, 0)
+df = df[df['InputTime'] > cutoff]  #get the data after Apr 16th 12pm
+
+#df.to_excel("C:/Users/jxiong/Downloads/check2.xlsx",index = False)
 #print(df)
 
 
@@ -61,20 +67,23 @@ df = df.groupby('ID', group_keys=False).apply(remove_duplicates).reset_index(dro
 #--------Group data based on 30s time interval---------
 df['Group'] = 0
 
-def group_scans(sub_df): #self-identified function, group the scanning result based on 30s gap
-    group = 0 #group number, start from 1
-    group_ids = [] #store the temporary group num for each group
-    last_time = None #store the data from last record to compare with the next one
-    for time in sub_df['InputTime']: #traverse all the records
-        if last_time is None or (time - last_time).total_seconds() > 30: #if the next time input has time gap larger than 30s, then set it as a new group
+def group_scans(sub_df):
+    group = 0
+    group_ids = []
+    group_start_time = None  # the start time of each group
+
+    for time in sub_df['InputTime']:
+        if group_start_time is None or (time - group_start_time).total_seconds() > 30:
             group += 1
+            group_start_time = time  
+
         group_ids.append(group)
-        last_time = time
+
     sub_df['Group'] = group_ids
     return sub_df
 
+
 df = df.groupby('ID', group_keys=False).apply(group_scans) #group the data based on 'ID', apply function to each of the group, then return a ungrouped result
-#print(df)
 
 
 
@@ -86,26 +95,51 @@ def aggregate_group(group):
     }
 
     # Job Number
-    job = group.loc[group['Input'].str.contains(r'^G\d+', na=False), 'Input']
-    result['Job_Number'] = job.iloc[0] if not job.empty else 'NA'
+    job = group.loc[group['Input'].str.contains(r'^[A-Za-z]\d{5}$', na=False), 'Input'] #change the identification of job number, the input in the format of 'a letter + five digits'
+    result['Job_Number'] = job.iloc[-1] if not job.empty else 'NA'  #take the last input of 'Job Number' within the group
 
     # Sequence
     seq = group.loc[group['Input'].str.fullmatch(r'\d{3}', na=False), 'Input']
-    result['Sequence'] = seq.iloc[0] if not seq.empty else 'NA'
+    result['Sequence'] = seq.iloc[-1] if not seq.empty else 'NA'  #take the last input of 'Sequence' within the group
 
     #  Status
     status = group.loc[group['Input'].isin(['Start', 'End']), 'Input']
-    result['Status'] = status.iloc[0] if not status.empty else 'NA'
+    result['Status'] = status.iloc[-1] if not status.empty else 'NA' #take the last input of 'status' within the group
 
     return pd.Series(result)
 
+# Define desired input(exclude some unexpected input)
+job_pattern = r'^[A-Za-z]\d{5}$'    
+seq_pattern = r'^\d{3}$'            
+status_values = ['Start', 'End']    
+
+# Only keep the input matching the format
+df = df[
+    df['Input'].str.match(job_pattern, na=False) |
+    df['Input'].str.match(seq_pattern, na=False) |
+    df['Input'].isin(status_values)
+]
+
 
 df = df.groupby(['ID', 'Group'], as_index=False, group_keys=False).apply(aggregate_group)
+
+
+# Count the number of NA in each row
+df['NA_Count'] = df[['Job_Number', 'Sequence', 'Status']].apply(lambda row: sum(row == 'NA'), axis=1)
+
+# Only keeps rows with less than 2 NA
+df = df[df['NA_Count'] < 2]
+
+# Delecte the counting row
+df.drop(columns=['NA_Count'], inplace=True)
+
 
 cleandf = df
 #print(cleandf)
 
 
+
+'''
 #-------------Fill in blank in Sequence---------------
 def fill_na_sequence(sub_df):
     known_seq = sub_df[sub_df['Sequence'] != 'NA'].drop_duplicates(subset=['Job_Number'])[['Job_Number', 'Sequence']]
@@ -126,7 +160,7 @@ df = df.groupby('ID', group_keys=False).apply(fill_na_sequence)
 
 fillseq_df = df
 #print(fillseq_df)
-
+'''
 
 
 #-------------Fill in blank in Status-----------------
@@ -147,12 +181,22 @@ def fill_missing_status(sub_df):
     
     return sub_df
 
-df = df.groupby(['ID', 'Job_Number', 'Sequence'], group_keys=False).apply(fill_missing_status)
+df.sort_values(by=['ID', 'Time'], inplace=True) 
+
+df = df.groupby(['ID'], group_keys=False).apply(fill_missing_status)
 
 fillstatus_df = df
-#print(fillstatus_df)
+print(fillstatus_df)
 
 
+
+
+
+
+#--------------------------------------------------------------------------------------------------------------------#
+
+
+'''
 #-------------------Integrate Start Time and End Time---------
 result = []
 
@@ -231,7 +275,7 @@ df['Final_Remark'] = df.apply(combine_remarks, axis=1)
 df.drop(columns=['Remark', 'Remark_EndTime'], inplace=True)
 
 paired_df = df
-print(paired_df)
+#print(paired_df)
 
 #paired_df.to_excel("C:/Users/jxiong/OneDrive - Simcona Electronics/Documents/Scanning Data Processing/Comments Added.xlsx", index=False)
 
@@ -252,7 +296,7 @@ grouped_duration.rename(columns={'Duration_Hours': 'Total_Duration'}, inplace=Tr
 
 #print(grouped_duration)
 
-
+'''
 
 
 
