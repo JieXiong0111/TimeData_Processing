@@ -102,8 +102,8 @@ def aggregate_group(group):
     seq = group.loc[group['Input'].str.fullmatch(r'\d{3}', na=False), 'Input']
     result['Sequence'] = seq.iloc[-1] if not seq.empty else 'NA'  #take the last input of 'Sequence' within the group
 
-    #  Status
-    status = group.loc[group['Input'].isin(['Start', 'End']), 'Input']
+    # Status
+    status = group.loc[group['Input'].isin(['Start', 'End','End Partially']), 'Input']
     result['Status'] = status.iloc[-1] if not status.empty else 'NA' #take the last input of 'status' within the group
 
     return pd.Series(result)
@@ -111,7 +111,7 @@ def aggregate_group(group):
 # Define desired input(exclude some unexpected input)
 job_pattern = r'^[A-Za-z]\d{5}$'    
 seq_pattern = r'^\d{3}$'            
-status_values = ['Start', 'End']    
+status_values = ['Start', 'End','End Partially']    
 
 # Only keep the input matching the format
 df = df[
@@ -139,54 +139,45 @@ cleandf = df
 
 
 
-'''
-#-------------Fill in blank in Sequence---------------
-def fill_na_sequence(sub_df):
-    known_seq = sub_df[sub_df['Sequence'] != 'NA'].drop_duplicates(subset=['Job_Number'])[['Job_Number', 'Sequence']]
-
-    job_seq_dict = dict(zip(known_seq['Job_Number'], known_seq['Sequence']))#create a dictionary to ease lookup
-
-    #new column indicating whether 'Sequence' is blank
-    sub_df['Remark_Sequence'] = 'NA'
-
-    for idx, row in sub_df.iterrows(): #idx: index number
-        if row['Sequence'] == 'NA' and row['Job_Number'] in job_seq_dict:
-            sub_df.at[idx, 'Sequence'] = job_seq_dict[row['Job_Number']]
-            sub_df.at[idx, 'Remark_Sequence'] = 'Missing Sequence'  #Comment on missing sequence
-    
-    return sub_df
-
-df = df.groupby('ID', group_keys=False).apply(fill_na_sequence)
-
-fillseq_df = df
-#print(fillseq_df)
-'''
-
-
 #-------------Fill in blank in Status-----------------
 def fill_missing_status(sub_df):
-    sub_df = sub_df.sort_values(by='Time').reset_index(drop=True) #sort by time
+    sub_df = sub_df.sort_values(by='Time').reset_index(drop=True)
     expected_status = 'Start'
     
-    #new column indicating whether 'Status' is blank
     sub_df['Remark_Status'] = 'NA'
 
     for idx, row in sub_df.iterrows():
         if row['Status'] == 'NA':
             sub_df.at[idx, 'Status'] = expected_status
-            sub_df.at[idx, 'Remark_Status'] = f'Missing {expected_status}'  
+            sub_df.at[idx, 'Remark_Status'] = f'Missing {expected_status}'
 
-        # update expected_status
-        expected_status = 'End' if sub_df.at[idx, 'Status'] == 'Start' else 'Start'
+        # expected_status：Start → End Partially → Start → ...
+        if sub_df.at[idx, 'Status'] == 'Start':
+            expected_status = 'End Partially'
+        elif sub_df.at[idx, 'Status'] in ['End', 'End Partially']: #fill in blank status data with 'Start'/'End Partially'
+            expected_status = 'Start'
     
     return sub_df
+
 
 df.sort_values(by=['ID', 'Time'], inplace=True) 
 
 df = df.groupby(['ID'], group_keys=False).apply(fill_missing_status)
 
+#remark the NA job Number and Sequence
+df['Remark_Job'] = df['Job_Number'].apply(lambda x: 'Missing Job_Number' if x == 'NA' else '')
+df['Remark_Seq'] = df['Sequence'].apply(lambda x: 'Missing Sequence' if x == 'NA' else '')
+df['Remark_Status'] = df['Remark_Status'].replace('NA', '')
+
+#Integrate remark columns
+df['Remark'] = df[['Remark_Job', 'Remark_Seq', 'Remark_Status']].apply(
+    lambda row: '/'.join(filter(None, row)), axis=1
+)
+
+df.drop(columns=['Remark_Job', 'Remark_Seq', 'Remark_Status'], inplace=True)
+
 fillstatus_df = df
-print(fillstatus_df)
+#print(fillstatus_df)
 
 
 
@@ -196,7 +187,9 @@ print(fillstatus_df)
 #--------------------------------------------------------------------------------------------------------------------#
 
 
-'''
+#add 'end partially', handle different possible sequence in a single 'start' 'end' group(add comment), for record with no end time, delete autofill instead adding note
+
+
 #-------------------Integrate Start Time and End Time---------
 result = []
 
@@ -280,6 +273,7 @@ paired_df = df
 #paired_df.to_excel("C:/Users/jxiong/OneDrive - Simcona Electronics/Documents/Scanning Data Processing/Comments Added.xlsx", index=False)
 
 
+'''
 #----------------Duration Calculation---------------------------
 
 df['Duration_Hours'] = (df['EndTime'] - df['StartTime']).dt.total_seconds() / 3600 #add a new column to calculate the duration
