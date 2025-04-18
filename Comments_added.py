@@ -184,16 +184,40 @@ fillstatus_df = df
 
 
 
-#--------------------------------------------------------------------------------------------------------------------#
+#---------------------------------------------------------------------------------------------------#
+#---------------------------------------------------------------------------------------------------#
+#Calculate units completed
+completed_df = df[df['Status'] == 'End']
+
+#Count the number of 'End' as Units completed
+units_completed = completed_df.groupby(['ID', 'Job_Number', 'Sequence']) \
+    .size() \
+    .reset_index(name='Units_Completed')
+
+#print(units_completed)
+#---------------------------------------------------------------------------------------------------#
+#---------------------------------------------------------------------------------------------------#
+
+
+
+
+
+
+
+
+#---------------------------------------------------------------------------------------------------#
+#---------------------------------------------------------------------------------------------------#
+#Calculation of the job duration
 
 #-------------------Integrate Start Time and End Time---------
 # delete"Remark" if it exist
-df = df.drop(columns=['Remark'], errors='ignore')
+df_dur = df
+df_dur = df_dur.drop(columns=['Remark'], errors='ignore')
 
 result = []
 
 # traverse ID + Job_Number + Sequence
-for (id, job, seq), group in df.groupby(['ID', 'Job_Number', 'Sequence']):
+for (id, job, seq), group in df_dur.groupby(['ID', 'Job_Number', 'Sequence']):
     group = group.sort_values(by='Time').reset_index(drop=True)
 
     starts = group[group['Status'] == 'Start']
@@ -227,29 +251,29 @@ for (id, job, seq), group in df.groupby(['ID', 'Job_Number', 'Sequence']):
             })
 
 # Create final DataFrame
-df = pd.DataFrame(result)
+df_dur = pd.DataFrame(result)
 
 # add a Final_Remark column based on Is_EndTime_Missing
-df['Final_Remark'] = df['Is_EndTime_Missing'].apply(lambda x: 'Missing EndTime' if x else 'NA')
+df_dur['EndTime_Remark'] = df_dur['Is_EndTime_Missing'].apply(lambda x: 'Missing EndTime' if x else 'NA')
 
 # Remove the helper column
-df.drop(columns=['Is_EndTime_Missing'], inplace=True)
+df_dur.drop(columns=['Is_EndTime_Missing'], inplace=True)
 
-paired_df = df
-print(paired_df)
+
+#print(df_dur)
 
 #paired_df.to_excel("C:/Users/jxiong/OneDrive - Simcona Electronics/Documents/Scanning Data Processing/Comments Added.xlsx", index=False)
 
 
 
 #-----------------------------Calculation of Duration----------------------------
-'''
 #----------------Duration Calculation---------------------------
 
-df['Duration_Hours'] = (df['EndTime'] - df['StartTime']).dt.total_seconds() / 3600 #add a new column to calculate the duration
-Duration_df = df[df['EndTime'].notna()]
+df_dur['Duration_Hours'] = (df_dur['EndTime'] - df_dur['StartTime']).dt.total_seconds() / 3600 #add a new column to calculate the duration
+Duration_df = df_dur[df_dur['EndTime'].notna()]
 
 Duration_df['Duration_Hours'] = Duration_df['Duration_Hours'].round(2)
+Duration_df.drop(columns=['EndTime_Remark'], inplace=True)
 #print(Duration_df)
 
 
@@ -260,9 +284,25 @@ grouped_duration.rename(columns={'Duration_Hours': 'Total_Duration'}, inplace=Tr
 
 #print(grouped_duration)
 
-'''
+
+#---------------------------------------------------------------------------------------------------#
+#---------------------------------------------------------------------------------------------------#
 
 
+
+
+
+#Merge to get the final result
+
+merged_df = pd.merge(Duration_df, units_completed, on=['ID', 'Job_Number', 'Sequence'], how='left')
+
+# if there's no units_completed, fill in with 0
+merged_df['Units_Completed'] = merged_df['Units_Completed'].fillna(0).astype(int)
+
+final_df = merged_df[['ID', 'Job_Number', 'Sequence', 'Units_Completed', 'Duration_Hours']]
+
+
+#print(final_df)
 
 
 
