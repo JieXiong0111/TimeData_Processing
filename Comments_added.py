@@ -186,93 +186,63 @@ fillstatus_df = df
 
 #--------------------------------------------------------------------------------------------------------------------#
 
-
-#add 'end partially', handle different possible sequence in a single 'start' 'end' group(add comment), for record with no end time, delete autofill instead adding note
-
-
 #-------------------Integrate Start Time and End Time---------
+# delete"Remark" if it exist
+df = df.drop(columns=['Remark'], errors='ignore')
+
 result = []
 
 # traverse ID + Job_Number + Sequence
 for (id, job, seq), group in df.groupby(['ID', 'Job_Number', 'Sequence']):
-    group = group.sort_values(by='Time').reset_index(drop=True) #sort by time
-    
-    starts = group[group['Status'] == 'Start']
-    ends = group[group['Status'] == 'End']
-    
-    end_idx = 0
-    
-    remark_seq = group['Remark_Sequence'].unique()
-    remark_status = group['Remark_Status'].unique()
-    
-    # remove 'NA'
-    remark_seq = [r for r in remark_seq if r != 'NA']
-    remark_status = [r for r in remark_status if r != 'NA']
+    group = group.sort_values(by='Time').reset_index(drop=True)
 
-    # integrate columns
-    if remark_seq and remark_status:
-        final_remark = f"{'; '.join(remark_seq)}/{'; '.join(remark_status)}" #if both have value, combine them with '/'
-    elif remark_seq:
-        final_remark = '; '.join(remark_seq)
-    elif remark_status:
-        final_remark = '; '.join(remark_status)
-    else:
-        final_remark = 'NA'
-    
+    starts = group[group['Status'] == 'Start']
+    ends_combined = group[group['Status'].isin(['End', 'End Partially'])]
+
+    end_idx = 0
+
     for _, start_row in starts.iterrows():
-        while end_idx < len(ends) and ends.iloc[end_idx]['Time'] <= start_row['Time']:
-            end_idx += 1 #skip this end time when traversing the following start time
-        
-        if end_idx < len(ends):
-            end_row = ends.iloc[end_idx]
+        while end_idx < len(ends_combined) and ends_combined.iloc[end_idx]['Time'] <= start_row['Time']:
+            end_idx += 1
+
+        if end_idx < len(ends_combined):
+            end_row = ends_combined.iloc[end_idx]
             result.append({
                 'ID': id,
                 'Job_Number': job,
                 'Sequence': seq,
                 'StartTime': start_row['Time'],
                 'EndTime': end_row['Time'],
-                'Remark': final_remark,
-                'Remark_EndTime': 'NA'
+                'Is_EndTime_Missing': False
             })
             end_idx += 1
         else:
-            fake_end = start_row['Time'].normalize() + pd.Timedelta(hours=15, minutes=15)
             result.append({
                 'ID': id,
                 'Job_Number': job,
                 'Sequence': seq,
                 'StartTime': start_row['Time'],
-                'EndTime': fake_end,
-                'Remark': final_remark,
-                'Remark_EndTime': 'Filled EndTime 15:15'
+                'EndTime': pd.NaT,
+                'Is_EndTime_Missing': True
             })
 
 # Create final DataFrame
 df = pd.DataFrame(result)
 
-# Combine Remark and Remark_EndTime
-def combine_remarks(row):
-    if row['Remark'] != 'NA' and row['Remark_EndTime'] != 'NA':
-        return f"{row['Remark']} / {row['Remark_EndTime']}"
-    elif row['Remark'] != 'NA':
-        return row['Remark']
-    elif row['Remark_EndTime'] != 'NA':
-        return row['Remark_EndTime']
-    else:
-        return 'NA'
+# add a Final_Remark column based on Is_EndTime_Missing
+df['Final_Remark'] = df['Is_EndTime_Missing'].apply(lambda x: 'Missing EndTime' if x else 'NA')
 
-# Apply function to each row
-df['Final_Remark'] = df.apply(combine_remarks, axis=1)
-
-# Drop original columns
-df.drop(columns=['Remark', 'Remark_EndTime'], inplace=True)
+# Remove the helper column
+df.drop(columns=['Is_EndTime_Missing'], inplace=True)
 
 paired_df = df
-#print(paired_df)
+print(paired_df)
 
 #paired_df.to_excel("C:/Users/jxiong/OneDrive - Simcona Electronics/Documents/Scanning Data Processing/Comments Added.xlsx", index=False)
 
 
+
+#-----------------------------Calculation of Duration----------------------------
 '''
 #----------------Duration Calculation---------------------------
 
