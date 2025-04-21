@@ -1,7 +1,10 @@
 import pymysql
 import pandas as pd
 from datetime import datetime
+from datetime import time
 import numpy as np
+import os
+import re
 
 
 
@@ -13,9 +16,13 @@ conn = pymysql.connect(
     database='ScannerData'
 )
 
-query = """
+target_date = '2025-04-18'
+
+query = f"""
 SELECT * FROM Scans
+WHERE DATE(scan_time) = '{target_date}'
 """
+
 df = pd.read_sql(query, conn)
 conn.close()
 
@@ -28,62 +35,115 @@ df.rename(columns={
 'scan_time': 'InputTime'
 }, inplace=True)
 
-cutoff = datetime(2025, 4, 16, 12, 0)
-df = df[df['InputTime'] > cutoff]  #get the data after Apr 16th 12pm
-
-#df.to_excel("C:/Users/jxiong/Downloads/check2.xlsx",index = False)
-#print(df)
 
 
 df['InputTime'] = pd.to_datetime(df['InputTime'].astype(str)) #transform to datetime format
 
 df.sort_values(by=['ID', 'InputTime'], inplace=True) #sort the data by time
 
-
-#----remove duplicates--------
-def remove_duplicates(sub_df):
-    unique_rows = []  
-    last_seen = {}   
-
-    for _, row in sub_df.iterrows():
-        input_val = row['Input']
-        input_time = row['InputTime']
-
-        if input_val in last_seen:
-            if (input_time - last_seen[input_val]).total_seconds() <= 30:
-                continue  
-
-        unique_rows.append(row)          
-        last_seen[input_val] = input_time 
-
-    return pd.DataFrame(unique_rows)
-
-
-df = df.groupby('ID', group_keys=False).apply(remove_duplicates).reset_index(drop=True)
-
+#df.to_excel("C:/Users/jxiong/Downloads/check3.xlsx",index = False)
 #print(df)
 
 
-#--------Group data based on 30s time interval---------
-df['Group'] = 0
 
-def group_scans(sub_df):
-    group = 0
-    group_ids = []
-    group_start_time = None  # the start time of each group
+#--------Group data based on 15s time interval---------
+def is_job_number(val):
+    return bool(re.match(r'^[A-Za-z]\d{5}$', str(val).strip()))
 
-    for time in sub_df['InputTime']:
-        if group_start_time is None or (time - group_start_time).total_seconds() > 30:
-            group += 1
-            group_start_time = time  
+def is_sequence(val):
+    return bool(re.match(r'^\d{3}$', str(val).strip()))
 
-        group_ids.append(group)
-
-    sub_df['Group'] = group_ids
-    return sub_df
+def is_status(val):
+    return str(val).strip() in ['Start', 'End', 'End Partially']
 
 
-df = df.groupby('ID', group_keys=False).apply(group_scans) #group the data based on 'ID', apply function to each of the group, then return a ungrouped result
+
+# First Group(based on 15s time interval)
+def time_based_grouping(df):
+    df = df.sort_values(by=['ID', 'InputTime']).reset_index(drop=True)
+    df['Group'] = 0
+
+    def group_scans(sub_df):
+        group = 0
+        group_ids = []
+        group_start_time = None
+
+        for _, row in sub_df.iterrows():
+            time = row['InputTime']
+            if group_start_time is None or (time - group_start_time).total_seconds() > 15:
+                group += 1
+                group_start_time = time
+            group_ids.append(group)
+
+        sub_df['Group'] = group_ids
+        return sub_df
+
+    return df.groupby('ID', group_keys=False).apply(group_scans)
+
+
+
+'''
+# Second Group(in case there are two set of input in one 15s group)
+def logic_refine_group(df):
+    def refine(sub_df):
+        sub_df = sub_df.sort_values(by='InputTime').reset_index(drop=True)
+        original_group = sub_df['Group'].iloc[0]
+
+        # Get End and Start
+        end_rows = sub_df[sub_df['Input'].isin(['End', 'End Partially'])]
+        start_rows = sub_df[sub_df['Input'] == 'Start']
+
+        if not end_rows.empty and not start_rows.empty:
+            first_end_time = end_rows.iloc[0]['InputTime']
+            first_start_time = start_rows.iloc[0]['InputTime']
+
+            if first_end_time < first_start_time:
+                # The first Job Number and Sequence
+                job_row_first = sub_df[sub_df['Input'].apply(is_job_number)].head(1)
+                seq_row_first = sub_df[sub_df['Input'].apply(is_sequence)].head(1)
+
+                # The last Job Number and Sequence
+                job_row_last = sub_df[sub_df['Input'].apply(is_job_number)].tail(1)
+                seq_row_last = sub_df[sub_df['Input'].apply(is_sequence)].tail(1)
+
+                new_groups = [None] * len(sub_df)
+
+                # Group_1
+                for idx in sub_df.index:
+                    if (
+                        idx in end_rows.index or
+                        idx in job_row_first.index or
+                        idx in seq_row_first.index
+                    ):
+                        new_groups[idx] = f"{original_group}_1"
+
+                # Group_2
+                for idx in sub_df.index:
+                    if (
+                        idx in start_rows.index or
+                        idx in job_row_last.index or
+                        idx in seq_row_last.index
+                    ):
+                        new_groups[idx] = f"{original_group}_2"
+
+                # Keep the original Group
+                for i in range(len(new_groups)):
+                    if new_groups[i] is None:
+                        new_groups[i] = str(original_group)
+
+                sub_df['Group'] = new_groups
+                return sub_df
+
+        # if there's no regroup do not add suffix
+        sub_df['Group'] = str(original_group)
+        return sub_df
+
+    return df.groupby(['ID', 'Group'], group_keys=False).apply(refine)
+'''
+
+df = time_based_grouping(df)
+#df = logic_refine_group(df)
+#print(df[df['ID']=='1C106BD2'])
 
 
 
@@ -97,7 +157,8 @@ def aggregate_group(group):
     # Job Number
     job = group.loc[group['Input'].str.contains(r'^[A-Za-z]\d{5}$', na=False), 'Input'] #change the identification of job number, the input in the format of 'a letter + five digits'
     result['Job_Number'] = job.iloc[-1] if not job.empty else 'NA'  #take the last input of 'Job Number' within the group
-
+    # print("Job Match in Group:", job.tolist())  
+    
     # Sequence
     seq = group.loc[group['Input'].str.fullmatch(r'\d{3}', na=False), 'Input']
     result['Sequence'] = seq.iloc[-1] if not seq.empty else 'NA'  #take the last input of 'Sequence' within the group
@@ -136,6 +197,8 @@ df.drop(columns=['NA_Count'], inplace=True)
 
 cleandf = df
 #print(cleandf)
+#print(df[df['ID']=='1C106BD2'])
+
 
 
 
@@ -182,6 +245,59 @@ fillstatus_df = df
 
 
 
+'''
+#----------------------------Output result------------------------------------
+# Create Output file
+output_dir = "C:/Users/jxiong/OneDrive - Simcona Electronics/Documents/Scanning Data Processing/Commented_BeforeInt"
+os.makedirs(output_dir, exist_ok=True)
+
+# Get ID whose records including records
+commented_df = fillstatus_df[fillstatus_df['Remark'] != '']
+commented_ids = commented_df['ID'].unique()
+
+output_file = os.path.join(output_dir, "Commented Records.xlsx")
+
+# Get all the commented ID into a single excel, each ID records corresponds to a sheet
+with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+    for id_ in commented_ids:
+        id_data = fillstatus_df[fillstatus_df['ID'] == id_]
+        id_data = id_data.drop(columns=['Group'], errors='ignore')
+        sheet_name = str(id_)[:31].replace('/', '_').replace('\\', '_').replace('*', '_').replace('?', '_')
+
+        id_data.to_excel(writer, sheet_name=sheet_name, index=False)
+
+
+'''
+
+
+
+#----------Load the updated data------------------------------------
+modified_file = "C:/Users/jxiong/OneDrive - Simcona Electronics/Documents/Scanning Data Processing/Commented_BeforeInt/Commented Records.xlsx"
+xls = pd.ExcelFile(modified_file)
+
+modified_df_list = []
+for sheet in xls.sheet_names:
+    df_sheet = pd.read_excel(xls, sheet_name=sheet, dtype={'Sequence': str})
+    modified_df_list.append(df_sheet)
+
+modified_df = pd.concat(modified_df_list, ignore_index=True)
+
+# make sure the date format is the same
+modified_df['Time'] = pd.to_datetime(modified_df['Time'])
+df['Time'] = pd.to_datetime(df['Time'])
+
+# Locate based on 'ID' and 'Input'
+df.set_index(['ID', 'Time'], inplace=True)
+modified_df.set_index(['ID', 'Time'], inplace=True)
+
+# Update
+df.update(modified_df)
+
+# Reset index
+df.reset_index(inplace=True)
+
+#print(df)
+
 
 
 #---------------------------------------------------------------------------------------------------#
@@ -210,13 +326,14 @@ units_completed = completed_df.groupby(['ID', 'Job_Number', 'Sequence']) \
 #Calculation of the job duration
 
 #-------------------Integrate Start Time and End Time---------
-# delete"Remark" if it exist
+# Delete"Remark" if it exist
 df_dur = df
 df_dur = df_dur.drop(columns=['Remark'], errors='ignore')
 
 result = []
+used_end_times = set()  # Mark on the 'End' records which has already been paired
 
-# traverse ID + Job_Number + Sequence
+# Get 'Start' and 'End' paired
 for (id, job, seq), group in df_dur.groupby(['ID', 'Job_Number', 'Sequence']):
     group = group.sort_values(by='Time').reset_index(drop=True)
 
@@ -237,8 +354,9 @@ for (id, job, seq), group in df_dur.groupby(['ID', 'Job_Number', 'Sequence']):
                 'Sequence': seq,
                 'StartTime': start_row['Time'],
                 'EndTime': end_row['Time'],
-                'Is_EndTime_Missing': False
+                'Comment': ''
             })
+            used_end_times.add(end_row['Time'])
             end_idx += 1
         else:
             result.append({
@@ -247,33 +365,117 @@ for (id, job, seq), group in df_dur.groupby(['ID', 'Job_Number', 'Sequence']):
                 'Sequence': seq,
                 'StartTime': start_row['Time'],
                 'EndTime': pd.NaT,
-                'Is_EndTime_Missing': True
+                'Comment': 'Missing End'
             })
 
-# Create final DataFrame
+# Add the Ends without being paired
+all_ends = df_dur[df_dur['Status'].isin(['End', 'End Partially'])]
+unused_ends = all_ends[~all_ends['Time'].isin(used_end_times)]
+
+for _, end_row in unused_ends.iterrows():
+    result.append({
+        'ID': end_row['ID'],
+        'Job_Number': end_row['Job_Number'],
+        'Sequence': end_row['Sequence'],
+        'StartTime': pd.NaT,
+        'EndTime': end_row['Time'],
+        'Comment': 'Missing Start'
+    })
+
+
 df_dur = pd.DataFrame(result)
-
-# add a Final_Remark column based on Is_EndTime_Missing
-df_dur['EndTime_Remark'] = df_dur['Is_EndTime_Missing'].apply(lambda x: 'Missing EndTime' if x else 'NA')
-
-# Remove the helper column
-df_dur.drop(columns=['Is_EndTime_Missing'], inplace=True)
-
+df_dur = df_dur.sort_values(by=['ID', 'StartTime']).reset_index(drop=True)
 
 #print(df_dur)
 
-#paired_df.to_excel("C:/Users/jxiong/OneDrive - Simcona Electronics/Documents/Scanning Data Processing/Comments Added.xlsx", index=False)
+
+
+#----------------------Comment on record which doesn't check out during lunch/break-----
+# Identify break&lunch time
+break_times = [(time(9, 0), time(9, 15)), (time(14, 0), time(14, 15))]
+lunch_time = (time(11, 55), time(13, 5))
+
+def includes_time_range(start, end, check_start, check_end):
+    if pd.isna(start) or pd.isna(end):
+        return False
+    return (start.time() <= check_start and end.time() >= check_end)
+
+# Tranverse each row to see if it contains break/lunch time
+for idx, row in df_dur.iterrows():
+    start = row['StartTime']
+    end = row['EndTime']
+    comment = row['Comment']
+
+    break_included = any(includes_time_range(start, end, bt_start, bt_end) for bt_start, bt_end in break_times)
+    lunch_included = includes_time_range(start, end, *lunch_time)
+
+    if break_included:
+        comment += ' | Break Time Included' if comment else 'Break Time Included'
+    if lunch_included:
+        comment += ' | Lunch Included' if comment else 'Lunch Included'
+
+    df_dur.at[idx, 'Comment'] = comment
+
+#print(df_dur)
 
 
 
-#-----------------------------Calculation of Duration----------------------------
+
+'''
+#---------output results----------
+# Create output folder
+output_dir = "C:/Users/jxiong/OneDrive - Simcona Electronics/Documents/Scanning Data Processing/Commented_AfterInt"
+os.makedirs(output_dir, exist_ok=True)
+
+# Extract records with comments
+commented_df = df_dur[df_dur['Comment'] != '']
+commented_ids = commented_df['ID'].unique()
+
+# Output path
+output_path = os.path.join(output_dir, "Commented Records.xlsx")
+
+# Get all the output into a single excel file, each ID with a different sheet
+with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+    for id_ in commented_ids:
+        id_data = df_dur[df_dur['ID'] == id_]
+
+        id_data_sorted = id_data.sort_values(by=['StartTime'])
+        
+        # Name the sheet name as 'ID' name and set rules to restrict some possible messy names
+        sheet_name = str(id_)[:31].replace('/', '_').replace('\\', '_').replace('*', '_').replace('?', '_')
+        
+        id_data.to_excel(writer, sheet_name=sheet_name, index=True)
+'''
+
+
+
+#--------------------Load data--------------------------------------
+modified_file2 = "C:/Users/jxiong/OneDrive - Simcona Electronics/Documents/Scanning Data Processing/Commented_AfterInt/Commented Records.xlsx"
+xls2 = pd.ExcelFile(modified_file2)
+
+modified_df_list2 = []
+for sheet in xls2.sheet_names:
+    df_sheet = pd.read_excel(xls2, sheet_name=sheet, dtype={'Sequence': str}, index_col=0)
+    modified_df_list2.append(df_sheet)
+
+# Merge data
+modified_df2 = pd.concat(modified_df_list2)
+
+#update df_dur based on index
+df_dur.update(modified_df2)
+
+#print(df_dur)
+
+
+
 #----------------Duration Calculation---------------------------
+df_dur = df_dur.drop(columns=['Comment'], errors='ignore')
 
 df_dur['Duration_Hours'] = (df_dur['EndTime'] - df_dur['StartTime']).dt.total_seconds() / 3600 #add a new column to calculate the duration
 Duration_df = df_dur[df_dur['EndTime'].notna()]
 
 Duration_df['Duration_Hours'] = Duration_df['Duration_Hours'].round(2)
-Duration_df.drop(columns=['EndTime_Remark'], inplace=True)
+
 #print(Duration_df)
 
 
@@ -287,6 +489,8 @@ grouped_duration.rename(columns={'Duration_Hours': 'Total_Duration'}, inplace=Tr
 
 #---------------------------------------------------------------------------------------------------#
 #---------------------------------------------------------------------------------------------------#
+
+
 
 
 
