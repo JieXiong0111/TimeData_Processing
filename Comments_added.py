@@ -44,7 +44,17 @@ df.sort_values(by=['ID', 'InputTime'], inplace=True) #sort the data by time
 #df.to_excel("C:/Users/jxiong/Downloads/check3.xlsx",index = False)
 #print(df)
 
+# import worker list
+url = "https://raw.githubusercontent.com/JieXiong0111/TimeData_Processing/main/Worker%20List.xlsx"
+df_worker = pd.read_excel(url, engine="openpyxl")
 
+
+# left merge, based on df. change the ID number to worker name
+df = df.merge(df_worker[['ID', 'Name']], on='ID', how='left')
+df.drop(columns=['ID'], inplace=True)
+df.rename(columns={'Name': 'ID'}, inplace=True)
+
+#print(df)
 
 #--------Group data based on 15s time interval---------
 def is_job_number(val):
@@ -222,10 +232,11 @@ def fill_missing_status(sub_df):
     
     return sub_df
 
+df['Date'] = df['Time'].dt.date
 
 df.sort_values(by=['ID', 'Time'], inplace=True) 
 
-df = df.groupby(['ID'], group_keys=False).apply(fill_missing_status)
+df = df.groupby(['ID', 'Date'], group_keys=False).apply(fill_missing_status)
 
 #remark the NA job Number and Sequence
 df['Remark_Job'] = df['Job_Number'].apply(lambda x: 'Missing Job_Number' if x == 'NA' else '')
@@ -238,6 +249,7 @@ df['Remark'] = df[['Remark_Job', 'Remark_Seq', 'Remark_Status']].apply(
 )
 
 df.drop(columns=['Remark_Job', 'Remark_Seq', 'Remark_Status'], inplace=True)
+df = df[['ID', 'Date', 'Job_Number', 'Sequence', 'Time','Status','Remark']]
 
 fillstatus_df = df
 #print(fillstatus_df)
@@ -265,9 +277,8 @@ with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
         sheet_name = str(id_)[:31].replace('/', '_').replace('\\', '_').replace('*', '_').replace('?', '_')
 
         id_data.to_excel(writer, sheet_name=sheet_name, index=False)
-
-
 '''
+
 
 
 
@@ -292,9 +303,14 @@ modified_df.set_index(['ID', 'Time'], inplace=True)
 
 # Update
 df.update(modified_df)
+df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d')
 
 # Reset index
 df.reset_index(inplace=True)
+df = df.drop(columns=['Remark'], errors='ignore')
+
+df = df[['ID', 'Date', 'Job_Number', 'Sequence', 'Time','Status']]
+
 
 #print(df)
 
@@ -306,11 +322,13 @@ df.reset_index(inplace=True)
 completed_df = df[df['Status'] == 'End']
 
 #Count the number of 'End' as Units completed
-units_completed = completed_df.groupby(['ID', 'Job_Number', 'Sequence']) \
+units_completed = completed_df.groupby(['ID', 'Date', 'Job_Number', 'Sequence']) \
     .size() \
     .reset_index(name='Units_Completed')
 
-#print(units_completed)
+units_completed.rename(columns={'ID': 'Name'}, inplace=True)
+
+# print(units_completed)
 #---------------------------------------------------------------------------------------------------#
 #---------------------------------------------------------------------------------------------------#
 
@@ -325,23 +343,27 @@ units_completed = completed_df.groupby(['ID', 'Job_Number', 'Sequence']) \
 #---------------------------------------------------------------------------------------------------#
 #Calculation of the job duration
 
-#-------------------Integrate Start Time and End Time---------
-# Delete"Remark" if it exist
-df_dur = df
+
+#-------------------Integrate Start Time and End Time (same-day only)---------
+df_dur = df.copy()
 df_dur = df_dur.drop(columns=['Remark'], errors='ignore')
 
-result = []
-used_end_times = set()  # Mark on the 'End' records which has already been paired
+# Get the date
+df_dur['Date'] = df_dur['Time'].dt.date
 
-# Get 'Start' and 'End' paired
-for (id, job, seq), group in df_dur.groupby(['ID', 'Job_Number', 'Sequence']):
+result = []
+used_end_times = set()
+
+# Group data based on ID + Job_Number + Sequence + Date 
+group_keys = ['ID', 'Job_Number', 'Sequence', 'Date']
+for keys, group in df_dur.groupby(group_keys):
+    id, job, seq, date = keys
     group = group.sort_values(by='Time').reset_index(drop=True)
 
     starts = group[group['Status'] == 'Start']
     ends_combined = group[group['Status'].isin(['End', 'End Partially'])]
 
     end_idx = 0
-
     for _, start_row in starts.iterrows():
         while end_idx < len(ends_combined) and ends_combined.iloc[end_idx]['Time'] <= start_row['Time']:
             end_idx += 1
@@ -350,6 +372,7 @@ for (id, job, seq), group in df_dur.groupby(['ID', 'Job_Number', 'Sequence']):
             end_row = ends_combined.iloc[end_idx]
             result.append({
                 'ID': id,
+                'Date': date,
                 'Job_Number': job,
                 'Sequence': seq,
                 'StartTime': start_row['Time'],
@@ -361,6 +384,7 @@ for (id, job, seq), group in df_dur.groupby(['ID', 'Job_Number', 'Sequence']):
         else:
             result.append({
                 'ID': id,
+                'Date': date,
                 'Job_Number': job,
                 'Sequence': seq,
                 'StartTime': start_row['Time'],
@@ -368,13 +392,14 @@ for (id, job, seq), group in df_dur.groupby(['ID', 'Job_Number', 'Sequence']):
                 'Comment': 'Missing End'
             })
 
-# Add the Ends without being paired
+# End without Start will be filled with NaT at the Start Time and commented
 all_ends = df_dur[df_dur['Status'].isin(['End', 'End Partially'])]
 unused_ends = all_ends[~all_ends['Time'].isin(used_end_times)]
 
 for _, end_row in unused_ends.iterrows():
     result.append({
         'ID': end_row['ID'],
+        'Date': end_row['Time'].date(),
         'Job_Number': end_row['Job_Number'],
         'Sequence': end_row['Sequence'],
         'StartTime': pd.NaT,
@@ -382,9 +407,10 @@ for _, end_row in unused_ends.iterrows():
         'Comment': 'Missing Start'
     })
 
-
+# Output result
 df_dur = pd.DataFrame(result)
 df_dur = df_dur.sort_values(by=['ID', 'StartTime']).reset_index(drop=True)
+
 
 #print(df_dur)
 
@@ -416,6 +442,18 @@ for idx, row in df_dur.iterrows():
 
     df_dur.at[idx, 'Comment'] = comment
 
+# Mark(*) on work duration longer than 195 minutes
+for idx, row in df_dur.iterrows():
+    start = row['StartTime']
+    end = row['EndTime']
+    comment = row.get('Comment', '') or ''
+
+    if not pd.isna(start) and not pd.isna(end):
+        duration_minutes = (end - start).total_seconds() / 60
+        if duration_minutes > 195 and '*' not in comment:
+            comment += '*'
+            df_dur.at[idx, 'Comment'] = comment.strip()
+
 #print(df_dur)
 
 
@@ -445,6 +483,7 @@ with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
         sheet_name = str(id_)[:31].replace('/', '_').replace('\\', '_').replace('*', '_').replace('?', '_')
         
         id_data.to_excel(writer, sheet_name=sheet_name, index=True)
+
 '''
 
 
@@ -463,6 +502,7 @@ modified_df2 = pd.concat(modified_df_list2)
 
 #update df_dur based on index
 df_dur.update(modified_df2)
+df_dur['Date'] = pd.to_datetime(df_dur['Date']).dt.strftime('%Y-%m-%d')
 
 #print(df_dur)
 
@@ -475,6 +515,11 @@ df_dur['Duration_Hours'] = (df_dur['EndTime'] - df_dur['StartTime']).dt.total_se
 Duration_df = df_dur[df_dur['EndTime'].notna()]
 
 Duration_df['Duration_Hours'] = Duration_df['Duration_Hours'].round(2)
+Duration_df.rename(columns={'ID': 'Name'}, inplace=True)
+
+#Merge worker number
+Duration_df = Duration_df.merge(df_worker[['Name','Number']], on='Name', how='left')
+Duration_df = Duration_df[['Name', 'Number', 'Date', 'Job_Number', 'Sequence', 'Duration_Hours']]
 
 #print(Duration_df)
 
@@ -498,15 +543,13 @@ grouped_duration.rename(columns={'Duration_Hours': 'Total_Duration'}, inplace=Tr
 
 #Merge to get the final result
 
-merged_df = pd.merge(Duration_df, units_completed, on=['ID', 'Job_Number', 'Sequence'], how='left')
+merged_df = pd.merge(Duration_df, units_completed, on=['Name', 'Date','Job_Number', 'Sequence'], how='left')
 
 # if there's no units_completed, fill in with 0
 merged_df['Units_Completed'] = merged_df['Units_Completed'].fillna(0).astype(int)
 
-final_df = merged_df[['ID', 'Job_Number', 'Sequence', 'Units_Completed', 'Duration_Hours']]
-
-
-#print(final_df)
+#Merge worker number
+#print(merged_df)
 
 
 
