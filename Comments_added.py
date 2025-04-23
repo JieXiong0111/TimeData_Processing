@@ -16,15 +16,17 @@ conn = pymysql.connect(
     database='ScannerData'
 )
 
-target_date = '2025-04-18'
+target_date = ('2025-04-21', '2025-04-18')
+target_date_sql = ", ".join([f"'{d}'" for d in target_date])
 
 query = f"""
 SELECT * FROM Scans
-WHERE DATE(scan_time) = '{target_date}'
+WHERE DATE(scan_time) IN ({target_date_sql})
 """
 
 df = pd.read_sql(query, conn)
 conn.close()
+
 
 if 'id' in df.columns:
     df.drop(columns=['id'], inplace=True)
@@ -41,7 +43,7 @@ df['InputTime'] = pd.to_datetime(df['InputTime'].astype(str)) #transform to date
 
 df.sort_values(by=['ID', 'InputTime'], inplace=True) #sort the data by time
 
-#df.to_excel("C:/Users/jxiong/Downloads/check3.xlsx",index = False)
+df.to_excel("C:/Users/jxiong/Downloads/check4.xlsx",index = False)
 #print(df)
 
 # import worker list
@@ -56,7 +58,7 @@ df.rename(columns={'Name': 'ID'}, inplace=True)
 
 #print(df)
 
-#--------Group data based on 15s time interval---------
+#--------Group data based on 20s time interval---------
 def is_job_number(val):
     return bool(re.match(r'^[A-Za-z]\d{5}$', str(val).strip()))
 
@@ -68,7 +70,7 @@ def is_status(val):
 
 
 
-# First Group(based on 15s time interval)
+# First Group(based on 20s time interval)
 def time_based_grouping(df):
     df = df.sort_values(by=['ID', 'InputTime']).reset_index(drop=True)
     df['Group'] = 0
@@ -80,7 +82,7 @@ def time_based_grouping(df):
 
         for _, row in sub_df.iterrows():
             time = row['InputTime']
-            if group_start_time is None or (time - group_start_time).total_seconds() > 15:
+            if group_start_time is None or (time - group_start_time).total_seconds() > 20:
                 group += 1
                 group_start_time = time
             group_ids.append(group)
@@ -249,15 +251,17 @@ df['Remark'] = df[['Remark_Job', 'Remark_Seq', 'Remark_Status']].apply(
 )
 
 df.drop(columns=['Remark_Job', 'Remark_Seq', 'Remark_Status'], inplace=True)
-df = df[['ID', 'Date', 'Job_Number', 'Sequence', 'Time','Status','Remark']]
+df = df[['Date','ID', 'Job_Number', 'Sequence', 'Time','Status','Remark']]
+
+df.sort_values(by=['Date','ID'], inplace=True) 
 
 fillstatus_df = df
 #print(fillstatus_df)
 
 
 
-
 '''
+
 #----------------------------Output result------------------------------------
 # Create Output file
 output_dir = "C:/Users/jxiong/OneDrive - Simcona Electronics/Documents/Scanning Data Processing/Commented_BeforeInt"
@@ -454,7 +458,10 @@ for idx, row in df_dur.iterrows():
             comment += '*'
             df_dur.at[idx, 'Comment'] = comment.strip()
 
-#print(df_dur)
+df_dur = df_dur[['Date','ID', 'Job_Number', 'Sequence', 'StartTime','EndTime','Comment']]
+
+df_dur.sort_values(by=['Date','ID'], inplace=True) 
+# print(df_dur)
 
 
 
@@ -483,8 +490,8 @@ with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
         sheet_name = str(id_)[:31].replace('/', '_').replace('\\', '_').replace('*', '_').replace('?', '_')
         
         id_data.to_excel(writer, sheet_name=sheet_name, index=True)
-
 '''
+
 
 
 
@@ -519,7 +526,9 @@ Duration_df.rename(columns={'ID': 'Name'}, inplace=True)
 
 #Merge worker number
 Duration_df = Duration_df.merge(df_worker[['Name','Number']], on='Name', how='left')
-Duration_df = Duration_df[['Name', 'Number', 'Date', 'Job_Number', 'Sequence', 'Duration_Hours']]
+Duration_df = Duration_df.groupby(['Date','Name', 'Number', 'Job_Number', 'Sequence'])['Duration_Hours'].sum().reset_index()
+
+Duration_df = Duration_df[['Date', 'Name', 'Number', 'Job_Number', 'Sequence', 'Duration_Hours']]
 
 #print(Duration_df)
 
@@ -543,7 +552,7 @@ grouped_duration.rename(columns={'Duration_Hours': 'Total_Duration'}, inplace=Tr
 
 #Merge to get the final result
 
-merged_df = pd.merge(Duration_df, units_completed, on=['Name', 'Date','Job_Number', 'Sequence'], how='left')
+merged_df = pd.merge(Duration_df, units_completed, on=['Date','Name', 'Job_Number', 'Sequence'], how='left')
 
 # if there's no units_completed, fill in with 0
 merged_df['Units_Completed'] = merged_df['Units_Completed'].fillna(0).astype(int)
