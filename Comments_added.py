@@ -58,7 +58,7 @@ df.rename(columns={'Name': 'ID'}, inplace=True)
 
 #print(df)
 
-#--------Group data based on 20s time interval---------
+#--------Group data based on 15s time interval---------
 def is_job_number(val):
     return bool(re.match(r'^[A-Za-z]\d{5}$', str(val).strip()))
 
@@ -70,7 +70,7 @@ def is_status(val):
 
 
 
-# First Group(based on 20s time interval)
+# First Group(based on 15s time interval)
 def time_based_grouping(df):
     df = df.sort_values(by=['ID', 'InputTime']).reset_index(drop=True)
     df['Group'] = 0
@@ -82,7 +82,7 @@ def time_based_grouping(df):
 
         for _, row in sub_df.iterrows():
             time = row['InputTime']
-            if group_start_time is None or (time - group_start_time).total_seconds() > 20:
+            if group_start_time is None or (time - group_start_time).total_seconds() > 15:
                 group += 1
                 group_start_time = time
             group_ids.append(group)
@@ -260,8 +260,8 @@ fillstatus_df = df
 
 
 
-'''
 
+'''
 #----------------------------Output result------------------------------------
 # Create Output file
 output_dir = "C:/Users/jxiong/OneDrive - Simcona Electronics/Documents/Scanning Data Processing/Commented_BeforeInt"
@@ -281,8 +281,8 @@ with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
         sheet_name = str(id_)[:31].replace('/', '_').replace('\\', '_').replace('*', '_').replace('?', '_')
 
         id_data.to_excel(writer, sheet_name=sheet_name, index=False)
-'''
 
+'''
 
 
 
@@ -508,7 +508,12 @@ for sheet in xls2.sheet_names:
 modified_df2 = pd.concat(modified_df_list2)
 
 #update df_dur based on index
-df_dur.update(modified_df2)
+update_part = modified_df2[modified_df2.index.notna()]
+new_rows = modified_df2[modified_df2.index.isna()]
+
+df_dur.update(update_part)
+df_dur = pd.concat([df_dur, new_rows], ignore_index=False)
+
 df_dur['Date'] = pd.to_datetime(df_dur['Date']).dt.strftime('%Y-%m-%d')
 
 #print(df_dur)
