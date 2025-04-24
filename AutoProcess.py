@@ -3,7 +3,8 @@ import pandas as pd
 import pymysql
 import re
 from io import BytesIO
-from datetime import datetime
+from datetime import datetime, time
+import numpy as np
 
 # App title
 st.title("📊 Scanning Data Processing Interface")
@@ -33,7 +34,6 @@ def download_excel_button(df, label, filename):
 # Database connection utility
 @st.cache_data
 def load_raw_data(start_date, end_date):
-    # Load worker name mapping
     worker_url = "https://raw.githubusercontent.com/JieXiong0111/TimeData_Processing/main/Worker%20List.xlsx"
     df_worker = pd.read_excel(worker_url, engine="openpyxl")
     conn = pymysql.connect(
@@ -59,15 +59,11 @@ def load_raw_data(start_date, end_date):
     }, inplace=True)
 
     df['Date'] = df['InputTime'].dt.date
-
     df['InputTime'] = pd.to_datetime(df['InputTime'].astype(str))
     df.sort_values(by=['ID', 'InputTime'], inplace=True)
 
-    # Merge worker names
     df = df.merge(df_worker[['ID', 'Name']], on='ID', how='left')
     df.drop(columns=['ID'], inplace=True)
-    df.rename(columns={'Name': 'Name'}, inplace=True)
-
     df = df[['Date', 'Name', 'Input', 'InputTime']]
     return df
 
@@ -113,7 +109,7 @@ def process_output1(df):
         result['Job_Number'] = job.iloc[-1] if not job.empty else 'NA'
         seq = group.loc[group['Input'].str.fullmatch(r'\d{3}', na=False), 'Input']
         result['Sequence'] = seq.iloc[-1] if not seq.empty else 'NA'
-        status = group.loc[group['Input'].isin(['Start', 'End','End Partially']), 'Input']
+        status = group.loc[group['Input'].isin(['Start', 'End', 'End Partially']), 'Input']
         result['Status'] = status.iloc[-1] if not status.empty else 'NA'
         return pd.Series(result)
 
@@ -134,7 +130,7 @@ def process_output1(df):
 
     job_pattern = r'^[A-Za-z]\d{5}$'
     seq_pattern = r'^\d{3}$'
-    status_values = ['Start', 'End','End Partially']
+    status_values = ['Start', 'End', 'End Partially']
 
     df = time_based_grouping(df)
     df = df[
@@ -162,25 +158,147 @@ def process_output1(df):
 
     df.drop(columns=['Remark_Job', 'Remark_Seq', 'Remark_Status'], inplace=True)
     df.rename(columns={'ID': 'Name'}, inplace=True)
-    df = df[['Date', 'Name', 'Job_Number', 'Sequence', 'Time','Status','Remark']]
-    df.sort_values(by=['Date','Name'], inplace=True)
+    df = df[['Date', 'Name', 'Job_Number', 'Sequence', 'Time', 'Status', 'Remark']]
+    df.sort_values(by=['Date', 'Name'], inplace=True)
 
-    # Only keep workers with non-blank remarks
-    # Get list of worker IDs with comments
     commented_ids = df[df['Remark'] != '']['Name'].unique()
     df = df[df['Name'].isin(commented_ids)]
-
     return df
 
+# Step 4: Units Completed and Job Duration Calculations
+def process_output2(df):
+    # Rename 'Name' to 'ID' to match Output2.py logic
+    df = df.rename(columns={'Name': 'ID'})
 
+    # Remove duplicates in the input DataFrame
+    df = df.drop_duplicates(subset=['ID', 'Job_Number', 'Sequence', 'Time', 'Status'], keep='first')
 
+    # Calculate Units Completed
+    completed_df = df[df['Status'] == 'End']
+    units_completed = completed_df.groupby(['ID', 'Date', 'Job_Number', 'Sequence']) \
+        .size() \
+        .reset_index(name='Units_Completed')
+    units_completed.rename(columns={'ID': 'Name'}, inplace=True)
+
+    # Calculate Job Duration
+    df_dur = df.copy()
+    df_dur['Date'] = pd.to_datetime(df_dur['Date']).dt.date
+    result = []
+    used_end_times = set()
+
+    # Group data based on ID + Job_Number + Sequence + Date
+    group_keys = ['ID', 'Job_Number', 'Sequence', 'Date']
+    for keys, group in df_dur.groupby(group_keys):
+        id, job, seq, date = keys
+        group = group.sort_values(by='Time').reset_index(drop=True)
+
+        # Remove duplicates within the group
+        group = group.drop_duplicates(subset=['Time', 'Status'], keep='first')
+
+        starts = group[group['Status'] == 'Start']
+        ends_combined = group[group['Status'].isin(['End', 'End Partially'])]
+
+        end_idx = 0
+        start_idx = 0
+        while start_idx < len(starts) and end_idx < len(ends_combined):
+            start_row = starts.iloc[start_idx]
+            end_row = ends_combined.iloc[end_idx]
+
+            if end_row['Time'] <= start_row['Time']:
+                # End time is before or at the same time as Start, skip this End
+                end_idx += 1
+                continue
+
+            # Valid pairing: End time is after Start time
+            result.append({
+                'ID': id,
+                'Date': date,
+                'Job_Number': job,
+                'Sequence': seq,
+                'StartTime': start_row['Time'],
+                'EndTime': end_row['Time'],
+                'Comment': ''
+            })
+            used_end_times.add(end_row['Time'])
+            start_idx += 1
+            end_idx += 1
+
+        # Handle remaining Starts without Ends
+        while start_idx < len(starts):
+            start_row = starts.iloc[start_idx]
+            result.append({
+                'ID': id,
+                'Date': date,
+                'Job_Number': job,
+                'Sequence': seq,
+                'StartTime': start_row['Time'],
+                'EndTime': pd.NaT,
+                'Comment': 'Missing End'
+            })
+            start_idx += 1
+
+    # Handle End without Start
+    all_ends = df_dur[df_dur['Status'].isin(['End', 'End Partially'])]
+    # Deduplicate End events
+    all_ends = all_ends.drop_duplicates(subset=['ID', 'Job_Number', 'Sequence', 'Time'], keep='first')
+    unused_ends = all_ends[~all_ends['Time'].isin(used_end_times)]
+    for _, end_row in unused_ends.iterrows():
+        result.append({
+            'ID': end_row['ID'],
+            'Date': end_row['Time'].date(),
+            'Job_Number': end_row['Job_Number'],
+            'Sequence': end_row['Sequence'],
+            'StartTime': pd.NaT,
+            'EndTime': end_row['Time'],
+            'Comment': 'Missing Start'
+        })
+
+    df_dur = pd.DataFrame(result)
+    df_dur = df_dur.sort_values(by=['ID', 'StartTime']).reset_index(drop=True)
+
+    # Comment on records overlapping break/lunch time
+    break_times = [(time(9, 0), time(9, 15)), (time(14, 0), time(14, 15))]
+    lunch_time = (time(11, 55), time(13, 5))
+
+    def includes_time_range(start, end, check_start, check_end):
+        if pd.isna(start) or pd.isna(end):
+            return False
+        return (start.time() <= check_start and end.time() >= check_end)
+
+    for idx, row in df_dur.iterrows():
+        start = row['StartTime']
+        end = row['EndTime']
+        comment = row['Comment']
+        break_included = any(includes_time_range(start, end, bt_start, bt_end) for bt_start, bt_end in break_times)
+        lunch_included = includes_time_range(start, end, *lunch_time)
+        if break_included:
+            comment += ' | Break Time Included' if comment else 'Break Time Included'
+        if lunch_included:
+            comment += ' | Lunch Included' if comment else 'Lunch Included'
+        df_dur.at[idx, 'Comment'] = comment
+
+    # Mark durations longer than 195 minutes
+    for idx, row in df_dur.iterrows():
+        start = row['StartTime']
+        end = row['EndTime']
+        comment = row.get('Comment', '') or ''
+        if not pd.isna(start) and not pd.isna(end):
+            duration_minutes = (end - start).total_seconds() / 60
+            if duration_minutes > 195 and '*' not in comment:
+                comment += '*'
+                df_dur.at[idx, 'Comment'] = comment.strip()
+
+    df_dur = df_dur[['Date', 'ID', 'Job_Number', 'Sequence', 'StartTime', 'EndTime', 'Comment']]
+    df_dur.sort_values(by=['Date', 'ID'], inplace=True)
+    df_dur.rename(columns={'ID': 'Name'}, inplace=True)
+
+    return units_completed, df_dur
 
 # Step 1: Load Raw Data
 if step == 1:
     st.header("Step 1: Select Date Range and Load Raw Data")
     start_date = st.date_input("Start Date", datetime.today())
     end_date = st.date_input("End Date", datetime.today())
-
     if st.button("Load Raw Data"):
         df_raw = load_raw_data(start_date, end_date)
         st.session_state.df_raw = df_raw
@@ -193,42 +311,31 @@ if step == 1:
 if step == 2:
     st.header("Step 2: Review and Modify Raw Data")
     df_raw = st.session_state.df_raw
-
     workers = df_raw['Name'].unique().tolist()
     selected_worker = st.selectbox("Select Worker to View Raw Data", workers)
     filtered_df_raw = df_raw[df_raw['Name'] == selected_worker]
-
     selected_date_raw = st.selectbox("Select Date to View", sorted(filtered_df_raw['Date'].unique()))
     filtered_df_raw = filtered_df_raw[filtered_df_raw['Date'] == selected_date_raw]
-
-# ✅ 顶部布局：Download按钮靠右对齐
     start_date = st.session_state.get("start_date")
     end_date = st.session_state.get("end_date")
-
     if start_date == end_date:
-        filename = f"{start_date}_output1.xlsx"
+        filename = f"{start_date}_raw_data.xlsx"
     else:
-        filename = f"{start_date}_to_{end_date}_rawdata.xlsx"
-        col1, col2 = st.columns([5, 1])
-        with col2:
-            download_excel_button(filtered_df_raw, "Download", filename)
-
-# ✅ 显示表格
+        filename = f"{start_date}_to_{end_date}_raw_data.xlsx"
+    col1, col2 = st.columns([5, 1])
+    with col2:
+        download_excel_button(filtered_df_raw, "Download", filename)
     edited_df_raw = st.data_editor(
         filtered_df_raw,
         num_rows="dynamic",
         use_container_width=True,
         key="editor_step2"
     )
-
-# ✅ 底部按钮布局
     col_back, col_spacer, col_continue = st.columns([1, 5, 1])
-
     with col_back:
         if st.button("Back"):
             st.session_state.step = 1
             st.rerun()
-
     with col_continue:
         if st.button("Continue"):
             mask = (df_raw['Name'] == selected_worker) & (df_raw['Date'] == selected_date_raw)
@@ -236,38 +343,27 @@ if step == 2:
             st.session_state.df_output1 = df_raw
             st.session_state.step = 3
             st.rerun()
- 
 
-
-
-# Step 3: Output1 Logic with user selection by worker
+# Step 3: Output1 Logic
 if step == 3:
     st.header("Step 3: Output1 – Grouping & Cleaning")
     df_output1 = st.session_state.df_output1
     processed_df1 = process_output1(df_output1)
     st.session_state.df_output2 = processed_df1
-
     workers = processed_df1['Name'].unique().tolist()
     selected_worker = st.selectbox("Select Worker to View", workers)
-
     filtered_df1 = processed_df1[processed_df1['Name'] == selected_worker]
     selected_date1 = st.selectbox("Select Date to View", sorted(filtered_df1['Date'].unique()))
     filtered_df1 = filtered_df1[filtered_df1['Date'] == selected_date1]
-
-    # ✅ 下载按钮放右上角，命名根据日期范围
     start_date = st.session_state.get("start_date")
     end_date = st.session_state.get("end_date")
-
     if start_date == end_date:
         filename = f"{start_date}_output1.xlsx"
     else:
         filename = f"{start_date}_to_{end_date}_output1.xlsx"
-
     col1, col2 = st.columns([5, 1])
     with col2:
-        download_excel_button(filtered_df1, "📥 Download", filename)
-
-    # ✅ 显示可编辑表格
+        download_excel_button(filtered_df1, "Download", filename)
     edited_df1 = st.data_editor(
         filtered_df1,
         num_rows="dynamic",
@@ -275,45 +371,91 @@ if step == 3:
         column_config={"Remark": st.column_config.TextColumn(width="large")},
         key="editor_step3"
     )
-
-    # ✅ 底部按钮布局：返回在左下角，继续在右下角
     col_back, col_spacer, col_continue = st.columns([1, 5, 1])
-
     with col_back:
-        if st.button("⬅️ Back to Step 2"):
+        if st.button("Back"):
             st.session_state.step = 2
             st.rerun()
-
     with col_continue:
-        if st.button("Continue to Output2"):
+        if st.button("Continue"):
             processed_df1.update(edited_df1)
             st.session_state.df_output2 = processed_df1
             st.session_state.step = 4
             st.rerun()
 
-
-# Output2 skipped based on user request — placeholder for future logic
+# Step 4: Output2 – Units Completed & Job Duration
 if step == 4:
-    st.header("Step 4: Output2 – Duration & Comments")
-    st.info("Output2 is currently disabled for review. Please focus on Output1 and prior steps.")
-    if st.button("Show Final Result"):
-        st.session_state.step = 5
-        st.rerun()
+    st.header("Step 4: Output2 – Units Completed & Job Duration")
+    df_output2 = st.session_state.df_output2
+    units_completed, df_dur = process_output2(df_output2)
 
-if step == 5:
-    # Final Step: Download
-    st.header("🎉 Final Processed Result")
-    df_final = st.session_state.df_final
+    # Store units_completed and df_dur for the next step
+    st.session_state.units_completed = units_completed
+    st.session_state.df_dur = df_dur
 
-    workers = df_final['Name'].unique().tolist()
-    selected_worker = st.selectbox("Select Worker to View Final Result", workers)
+    # Get unique workers
+    workers = df_dur['Name'].unique().tolist()
+    
+    # Use a container for better control over selectbox rendering
+    with st.container():
+        selected_worker = st.selectbox(
+            "Select Worker to View",
+            workers,
+            key="worker_select_step4",  # Unique key to force re-render
+            help="Select a worker to filter data"
+        )
 
-    st.dataframe(df_final[df_final['Name'] == selected_worker])
+        # Filter Job Duration to get unique dates
+        filtered_dur = df_dur[df_dur['Name'] == selected_worker]
+        
+        # Ensure dates are unique, sorted, and formatted as strings for display
+        date_options = sorted(filtered_dur['Date'].unique())
+        date_options = [str(date) for date in date_options]  # Convert to strings for consistent rendering
+        
+        # Display date selectbox in a wider column layout
+        col1, col2 = st.columns([3, 1])  # Wider column for selectbox
+        with col1:
+            selected_date = st.selectbox(
+                "Select Date to View",
+                date_options,
+                key="date_select_step4",  # Unique key to force re-render
+                help="Select a date to view data"
+            )
+        
+        # Convert selected_date back to original format (date object)
+        selected_date = pd.to_datetime(selected_date).date()
 
-    excel_data = to_excel(df_final)
-    st.download_button(
-        label="📥 Download Final Result",
-        data=excel_data,
-        file_name="Final_Result.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+        # Filter Job Duration
+        filtered_dur = df_dur[(df_dur['Name'] == selected_worker) & (df_dur['Date'] == selected_date)]
+
+        # Download button filenames
+        start_date = st.session_state.get("start_date")
+        end_date = st.session_state.get("end_date")
+        if start_date == end_date:
+            filename_dur = f"{start_date}_job_duration.xlsx"
+        else:
+            filename_dur = f"{start_date}_to_{end_date}_job_duration.xlsx"
+
+        # Display Job Duration (Main Table)
+        st.subheader("Job Duration")
+        col1, col2 = st.columns([5, 1])
+        with col2:
+            download_excel_button(filtered_dur, "Download Duration", filename_dur)
+        st.dataframe(filtered_dur, use_container_width=True)
+
+        # Navigation buttons
+        col_back, col_spacer, col_finish = st.columns([1, 5, 1])
+        with col_back:
+            if st.button("Back"):
+                st.session_state.step = 3
+                st.rerun()
+        with col_finish:
+            if st.button("Finish"):
+                st.session_state.step = 1
+                st.session_state.df_raw = None
+                st.session_state.df_output1 = None
+                st.session_state.df_output2 = None
+                st.session_state.units_completed = None
+                st.session_state.df_dur = None
+                st.success("Processing complete! Returning to Step 1.")
+                st.rerun()
