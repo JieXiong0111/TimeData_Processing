@@ -1,0 +1,366 @@
+import streamlit as st
+import pandas as pd
+import pymysql
+import re
+from io import BytesIO
+from datetime import datetime
+
+# App title
+st.title("📊 Scanning Data Processing Interface")
+
+# Step tracker
+step = st.session_state.get("step", 1)
+
+# Utility: Convert DataFrame to downloadable Excel
+@st.cache_data
+def to_excel(df):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name='Sheet1')
+    processed_data = output.getvalue()
+    return processed_data
+
+# Database connection utility
+@st.cache_data
+def load_raw_data(start_date, end_date):
+    # Load worker name mapping
+    worker_url = "https://raw.githubusercontent.com/JieXiong0111/TimeData_Processing/main/Worker%20List.xlsx"
+    df_worker = pd.read_excel(worker_url, engine="openpyxl")
+    conn = pymysql.connect(
+        host='172.20.0.166',
+        user='jxiong',
+        password='S1mc0na2025!',
+        database='ScannerData'
+    )
+    query = f"""
+    SELECT * FROM Scans
+    WHERE DATE(scan_time) BETWEEN '{start_date}' AND '{end_date}'
+    """
+    df = pd.read_sql(query, conn)
+    conn.close()
+
+    if 'id' in df.columns:
+        df.drop(columns=['id'], inplace=True)
+
+    df.rename(columns={
+        'device_sn': 'ID',
+        'scanned_data': 'Input',
+        'scan_time': 'InputTime'
+    }, inplace=True)
+
+    df['Date'] = df['InputTime'].dt.date
+
+    df['InputTime'] = pd.to_datetime(df['InputTime'].astype(str))
+    df.sort_values(by=['ID', 'InputTime'], inplace=True)
+
+    # Merge worker names
+    df = df.merge(df_worker[['ID', 'Name']], on='ID', how='left')
+    df.drop(columns=['ID'], inplace=True)
+    df.rename(columns={'Name': 'Name'}, inplace=True)
+
+    df = df[['Date', 'Name', 'Input', 'InputTime']]
+    return df
+
+# Grouping and remark logic
+@st.cache_data
+def process_output1(df):
+    def is_job_number(val):
+        return bool(re.match(r'^[A-Za-z]\d{5}$', str(val).strip()))
+
+    def is_sequence(val):
+        return bool(re.match(r'^\d{3}$', str(val).strip()))
+
+    def is_status(val):
+        return str(val).strip() in ['Start', 'End', 'End Partially']
+
+    def time_based_grouping(df):
+        df = df.sort_values(by=['Name', 'InputTime']).reset_index(drop=True)
+        df['Group'] = 0
+
+        def group_scans(sub_df):
+            group = 0
+            group_ids = []
+            group_start_time = None
+
+            for _, row in sub_df.iterrows():
+                time = row['InputTime']
+                if group_start_time is None or (time - group_start_time).total_seconds() > 15:
+                    group += 1
+                    group_start_time = time
+                group_ids.append(group)
+
+            sub_df['Group'] = group_ids
+            return sub_df
+
+        return df.groupby('Name', group_keys=False).apply(group_scans)
+
+    def aggregate_group(group):
+        result = {
+            'Name': group['Name'].iloc[0],
+            'Time': group['InputTime'].max()
+        }
+        job = group.loc[group['Input'].str.contains(r'^[A-Za-z]\d{5}$', na=False), 'Input']
+        result['Job_Number'] = job.iloc[-1] if not job.empty else 'NA'
+        seq = group.loc[group['Input'].str.fullmatch(r'\d{3}', na=False), 'Input']
+        result['Sequence'] = seq.iloc[-1] if not seq.empty else 'NA'
+        status = group.loc[group['Input'].isin(['Start', 'End','End Partially']), 'Input']
+        result['Status'] = status.iloc[-1] if not status.empty else 'NA'
+        return pd.Series(result)
+
+    def fill_missing_status(sub_df):
+        sub_df = sub_df.sort_values(by='Time').reset_index(drop=True)
+        expected_status = 'Start'
+        sub_df['Remark_Status'] = 'NA'
+
+        for idx, row in sub_df.iterrows():
+            if row['Status'] == 'NA':
+                sub_df.at[idx, 'Status'] = expected_status
+                sub_df.at[idx, 'Remark_Status'] = f'Missing {expected_status}'
+            if sub_df.at[idx, 'Status'] == 'Start':
+                expected_status = 'End Partially'
+            elif sub_df.at[idx, 'Status'] in ['End', 'End Partially']:
+                expected_status = 'Start'
+        return sub_df
+
+    job_pattern = r'^[A-Za-z]\d{5}$'
+    seq_pattern = r'^\d{3}$'
+    status_values = ['Start', 'End','End Partially']
+
+    df = time_based_grouping(df)
+    df = df[
+        df['Input'].str.match(job_pattern, na=False) |
+        df['Input'].str.match(seq_pattern, na=False) |
+        df['Input'].isin(status_values)
+    ]
+    df = df.groupby(['Name', 'Group'], as_index=False, group_keys=False).apply(aggregate_group)
+
+    df['NA_Count'] = df[['Job_Number', 'Sequence', 'Status']].apply(lambda row: sum(row == 'NA'), axis=1)
+    df = df[df['NA_Count'] < 2]
+    df.drop(columns=['NA_Count'], inplace=True)
+
+    df['Date'] = df['Time'].dt.date
+    df.sort_values(by=['Name', 'Time'], inplace=True)
+    df = df.groupby(['Name', 'Date'], group_keys=False).apply(fill_missing_status)
+
+    df['Remark_Job'] = df['Job_Number'].apply(lambda x: 'Missing Job_Number' if x == 'NA' else '')
+    df['Remark_Seq'] = df['Sequence'].apply(lambda x: 'Missing Sequence' if x == 'NA' else '')
+    df['Remark_Status'] = df['Remark_Status'].replace('NA', '')
+
+    df['Remark'] = df[['Remark_Job', 'Remark_Seq', 'Remark_Status']].apply(
+        lambda row: '/'.join(filter(None, row)), axis=1
+    )
+
+    df.drop(columns=['Remark_Job', 'Remark_Seq', 'Remark_Status'], inplace=True)
+    #df.rename(columns={'ID': 'Name'}, inplace=True)
+    df = df[['Date', 'Name', 'Job_Number', 'Sequence', 'Time','Status','Remark']]
+    df.sort_values(by=['Date','Name'], inplace=True)
+
+    # Only keep workers with non-blank remarks
+    # Get list of worker IDs with comments
+    commented_ids = df[df['Remark'] != '']['Name'].unique()
+    df = df[df['Name'].isin(commented_ids)]
+
+    return df
+
+# Step 1: Load Raw Data
+if step == 1:
+    st.header("Step 1: Select Date Range and Load Raw Data")
+    start_date = st.date_input("Start Date", datetime.today())
+    end_date = st.date_input("End Date", datetime.today())
+
+    if st.button("Load Raw Data"):
+        df_raw = load_raw_data(start_date, end_date)
+        st.session_state.df_raw = df_raw
+        st.session_state.step = 2
+        st.rerun()
+
+# Step 2: Review Raw Data & Continue
+if step == 2:
+    st.header("Step 2: Review and Modify Raw Data")
+    df_raw = st.session_state.df_raw
+
+    workers = df_raw['Name'].unique().tolist()
+    selected_worker = st.selectbox("Select Worker to View Raw Data", workers)
+
+    filtered_df_raw = df_raw[df_raw['Name'] == selected_worker]
+    selected_date_raw = st.selectbox("Select Date to View", sorted(filtered_df_raw['Date'].unique()))
+    filtered_df_raw = filtered_df_raw[filtered_df_raw['Date'] == selected_date_raw]
+
+    edited_df_raw = st.data_editor(filtered_df_raw, num_rows="dynamic", use_container_width=True, column_config={})
+
+    if st.button("Continue to Output1"):
+        df_raw[df_raw['Name'] == selected_worker] = edited_df_raw
+        st.session_state.df_output1 = df_raw
+        st.session_state.step = 3
+        st.rerun()
+
+# Step 3: Output1 Logic with user selection by worker
+if step == 3:
+    st.header("Step 3: Output1 – Grouping & Cleaning")
+    df_output1 = st.session_state.df_output1
+    processed_df1 = process_output1(df_output1)
+    st.session_state.df_output2 = processed_df1
+
+    workers = processed_df1['Name'].unique().tolist()
+    selected_worker = st.selectbox("Select Worker to View", workers)
+
+    filtered_df1 = processed_df1[processed_df1['Name'] == selected_worker]
+    selected_date1 = st.selectbox("Select Date to View", sorted(filtered_df1['Date'].unique()))
+    filtered_df1 = filtered_df1[filtered_df1['Date'] == selected_date1]
+
+    edited_df1 = st.data_editor(filtered_df1, num_rows="dynamic", use_container_width=True)
+
+    
+
+    if st.button("Continue to Output2"):
+        processed_df1.update(edited_df1)
+        st.session_state.df_output2 = processed_df1
+        st.session_state.step = 4
+        st.rerun()
+
+if step == 4:
+    st.header("Step 4: Output2 – Duration & Comments")
+    df_output1 = st.session_state.df_output2.copy()
+
+    df_output1 = df_output1.sort_values(by=['Name', 'Date', 'Time']).reset_index(drop=True)
+    result = []
+    used_end_times = set()
+
+    for keys, group in df_output1.groupby(['Name', 'Job_Number', 'Sequence', 'Date']):
+        name, job, seq, date = keys
+        group = group.sort_values(by='Time').reset_index(drop=True)
+
+        starts = group[group['Status'] == 'Start']
+        ends_combined = group[group['Status'].isin(['End', 'End Partially'])]
+
+        end_idx = 0
+        used_start_times = set()
+        used_start_times = set()
+        for _, start_row in starts.iterrows():
+            while end_idx < len(ends_combined) and ends_combined.iloc[end_idx]['Time'] <= start_row['Time']:
+                end_idx += 1
+            if end_idx < len(ends_combined):
+                end_row = ends_combined.iloc[end_idx]
+                result.append({
+                    'Name': name,
+                    'Date': date,
+                    'Job_Number': job,
+                    'Sequence': seq,
+                    'StartTime': start_row['Time'],
+                    'EndTime': end_row['Time'],
+                    'Comment': ''
+                })
+                used_start_times.add(start_row['Time'])
+                used_end_times.add(end_row['Time'])
+                end_idx += 1
+            else:
+                result.append({
+                    'Name': name,
+                    'Date': date,
+                    'Job_Number': job,
+                    'Sequence': seq,
+                    'StartTime': start_row['Time'],
+                    'EndTime': pd.NaT,
+                    'Comment': 'Missing End'
+                })
+                result.append({
+                    'Name': name,
+                    'Date': date,
+                    'Job_Number': job,
+                    'Sequence': seq,
+                    'StartTime': start_row['Time'],
+                    'EndTime': pd.NaT,
+                    'Comment': 'Missing End'
+                })
+
+    all_ends = df_output1[df_output1['Status'].isin(['End', 'End Partially'])]
+    unused_ends = all_ends[~all_ends['Time'].isin(used_end_times)]
+    for _, end_row in unused_ends.iterrows():
+        if pd.isna(end_row['Time']) or end_row['Time'] in used_end_times:
+            continue
+        result.append({
+            'Name': end_row['Name'],
+            'Date': end_row['Date'],
+            'Job_Number': end_row['Job_Number'],
+            'Sequence': end_row['Sequence'],
+            'StartTime': pd.NaT,
+            'EndTime': end_row['Time'],
+            'Comment': 'Missing Start'
+        })
+
+    df_output2 = pd.DataFrame(result)
+
+    # Prevent KeyError if result is empty
+    expected_cols = ['Date', 'Name', 'Job_Number', 'Sequence', 'StartTime', 'EndTime', 'Comment']
+    df_output2 = df_output2[[col for col in expected_cols if col in df_output2.columns]]
+
+    # Add break/lunch time comments and duration flag
+    from datetime import time as dtime
+    break_times = [(dtime(9, 0), dtime(9, 15)), (dtime(14, 0), dtime(14, 15))]
+    lunch_time = (dtime(11, 55), dtime(13, 5))
+
+    def includes_time_range(start, end, check_start, check_end):
+        if pd.isna(start) or pd.isna(end):
+            return False
+        return start.time() <= check_start and end.time() >= check_end
+
+    for idx, row in df_output2.iterrows():
+        start = row['StartTime']
+        end = row['EndTime']
+        comment = row['Comment']
+
+        break_included = any(includes_time_range(start, end, bt[0], bt[1]) for bt in break_times)
+        lunch_included = includes_time_range(start, end, *lunch_time)
+
+        if break_included:
+            comment += ' | Break Time Included' if comment else 'Break Time Included'
+        if lunch_included:
+            comment += ' | Lunch Included' if comment else 'Lunch Included'
+
+        if not pd.isna(start) and not pd.isna(end):
+            duration_minutes = (end - start).total_seconds() / 60
+            if duration_minutes > 195 and '*' not in comment:
+                comment += ' *'
+
+        df_output2.at[idx, 'Comment'] = comment
+
+    df_output2 = df_output2[['Date','Name', 'Job_Number', 'Sequence', 'StartTime','EndTime','Comment']]
+    df_output2.sort_values(by=['Date','Name'], inplace=True)
+
+    workers = df_output2['Name'].unique().tolist()
+    selected_worker = st.selectbox("Select Worker to View Output2", workers)
+    filtered_df2 = df_output2[df_output2['Name'] == selected_worker]
+    selected_date2 = st.selectbox("Select Date to View", sorted(filtered_df2['Date'].unique()), key="output2_date_picker")
+    filtered_df2 = filtered_df2[filtered_df2['Date'] == selected_date2]
+
+    edited_df2 = st.data_editor(
+        filtered_df2,
+        num_rows="dynamic",
+        use_container_width=True,
+        column_config={"Comment": st.column_config.Column(width="xlarge")}
+    )
+    st.session_state.df_final = df_output2
+
+    
+
+    if st.button("Show Final Result"):
+        st.session_state.step = 5
+        st.rerun()
+
+if step == 5:
+    # Final Step: Download
+    st.header("🎉 Final Processed Result")
+    df_final = st.session_state.df_final
+
+    workers = df_final['Name'].unique().tolist()
+    selected_worker = st.selectbox("Select Worker to View Final Result", workers)
+
+    st.dataframe(df_final[df_final['Name'] == selected_worker])
+
+    excel_data = to_excel(df_final)
+    st.download_button(
+        label="📥 Download Final Result",
+        data=excel_data,
+        file_name="Final_Result.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
