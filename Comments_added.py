@@ -16,13 +16,25 @@ conn = pymysql.connect(
     database='ScannerData'
 )
 
-target_date = ('2025-04-21', '2025-04-18')
-target_date_sql = ", ".join([f"'{d}'" for d in target_date])
+def build_date_filter(target_date):
+    if isinstance(target_date, str):
+        return f"DATE(scan_time) = '{target_date}'"
+    
+    elif isinstance(target_date, (list, tuple)):
+        target_date_sql = ", ".join([f"'{d}'" for d in target_date])
+        return f"DATE(scan_time) IN ({target_date_sql})"
+
+    else:
+        raise ValueError("Invalid target_date format")
+
+
+date_filter = build_date_filter('2025-4-24')
 
 query = f"""
 SELECT * FROM Scans
-WHERE DATE(scan_time) IN ({target_date_sql})
+WHERE {date_filter}
 """
+
 
 df = pd.read_sql(query, conn)
 conn.close()
@@ -44,7 +56,7 @@ df['InputTime'] = pd.to_datetime(df['InputTime'].astype(str)) #transform to date
 df.sort_values(by=['ID', 'InputTime'], inplace=True) #sort the data by time
 
 df.to_excel("C:/Users/jxiong/Downloads/check4.xlsx",index = False)
-#print(df)
+# print(df)
 
 # import worker list
 url = "https://raw.githubusercontent.com/JieXiong0111/TimeData_Processing/main/Worker%20List.xlsx"
@@ -56,7 +68,11 @@ df = df.merge(df_worker[['ID', 'Name']], on='ID', how='left')
 df.drop(columns=['ID'], inplace=True)
 df.rename(columns={'Name': 'ID'}, inplace=True)
 
+
+
 #print(df)
+#df.to_excel("C:/Users/jxiong/OneDrive - Simcona Electronics/Documents/Scanning Data Processing//Commented_BeforeInt/check6.xlsx", index=False)
+
 
 #--------Group data based on 15s time interval---------
 def is_job_number(val):
@@ -93,69 +109,9 @@ def time_based_grouping(df):
     return df.groupby('ID', group_keys=False).apply(group_scans)
 
 
-
-'''
-# Second Group(in case there are two set of input in one 15s group)
-def logic_refine_group(df):
-    def refine(sub_df):
-        sub_df = sub_df.sort_values(by='InputTime').reset_index(drop=True)
-        original_group = sub_df['Group'].iloc[0]
-
-        # Get End and Start
-        end_rows = sub_df[sub_df['Input'].isin(['End', 'End Partially'])]
-        start_rows = sub_df[sub_df['Input'] == 'Start']
-
-        if not end_rows.empty and not start_rows.empty:
-            first_end_time = end_rows.iloc[0]['InputTime']
-            first_start_time = start_rows.iloc[0]['InputTime']
-
-            if first_end_time < first_start_time:
-                # The first Job Number and Sequence
-                job_row_first = sub_df[sub_df['Input'].apply(is_job_number)].head(1)
-                seq_row_first = sub_df[sub_df['Input'].apply(is_sequence)].head(1)
-
-                # The last Job Number and Sequence
-                job_row_last = sub_df[sub_df['Input'].apply(is_job_number)].tail(1)
-                seq_row_last = sub_df[sub_df['Input'].apply(is_sequence)].tail(1)
-
-                new_groups = [None] * len(sub_df)
-
-                # Group_1
-                for idx in sub_df.index:
-                    if (
-                        idx in end_rows.index or
-                        idx in job_row_first.index or
-                        idx in seq_row_first.index
-                    ):
-                        new_groups[idx] = f"{original_group}_1"
-
-                # Group_2
-                for idx in sub_df.index:
-                    if (
-                        idx in start_rows.index or
-                        idx in job_row_last.index or
-                        idx in seq_row_last.index
-                    ):
-                        new_groups[idx] = f"{original_group}_2"
-
-                # Keep the original Group
-                for i in range(len(new_groups)):
-                    if new_groups[i] is None:
-                        new_groups[i] = str(original_group)
-
-                sub_df['Group'] = new_groups
-                return sub_df
-
-        # if there's no regroup do not add suffix
-        sub_df['Group'] = str(original_group)
-        return sub_df
-
-    return df.groupby(['ID', 'Group'], group_keys=False).apply(refine)
-'''
-
 df = time_based_grouping(df)
 #df = logic_refine_group(df)
-#print(df[df['ID']=='1C106BD2'])
+#print(df)
 
 
 
@@ -172,18 +128,22 @@ def aggregate_group(group):
     # print("Job Match in Group:", job.tolist())  
     
     # Sequence
-    seq = group.loc[group['Input'].str.fullmatch(r'\d{3}', na=False), 'Input']
-    result['Sequence'] = seq.iloc[-1] if not seq.empty else 'NA'  #take the last input of 'Sequence' within the group
+    seq = group.loc[
+    group['Input'].apply(lambda x: bool(re.fullmatch(r'\d{3}', str(x))) or str(x) == 'Training'),'Input']    
+    result['Sequence'] = seq.iloc[-1] if not seq.empty else 'NA'
 
     # Status
     status = group.loc[group['Input'].isin(['Start', 'End','End Partially']), 'Input']
     result['Status'] = status.iloc[-1] if not status.empty else 'NA' #take the last input of 'status' within the group
-
+    
+    if result['Sequence'] == 'Training':
+        result['Job_Number'] = 'M00000'   
+    
     return pd.Series(result)
 
 # Define desired input(exclude some unexpected input)
 job_pattern = r'^[A-Za-z]\d{5}$'    
-seq_pattern = r'^\d{3}$'            
+seq_pattern = r'^\d{3}$|^Training$'
 status_values = ['Start', 'End','End Partially']    
 
 # Only keep the input matching the format
@@ -563,7 +523,7 @@ merged_df = pd.merge(Duration_df, units_completed, on=['Date','Name', 'Job_Numbe
 merged_df['Units_Completed'] = merged_df['Units_Completed'].fillna(0).astype(int)
 
 #Merge worker number
-#print(merged_df)
+print(merged_df)
 
 
 
