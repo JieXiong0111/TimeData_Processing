@@ -28,7 +28,7 @@ def build_date_filter(target_date):
         raise ValueError("Invalid target_date format")
 
 
-date_filter = build_date_filter('2025-4-24')
+date_filter = build_date_filter('2025-4-30','2025-5-1')
 
 query = f"""
 SELECT * FROM Scans
@@ -56,7 +56,7 @@ df['InputTime'] = pd.to_datetime(df['InputTime'].astype(str)) #transform to date
 df.sort_values(by=['ID', 'InputTime'], inplace=True) #sort the data by time
 
 df.to_excel("C:/Users/jxiong/Downloads/check4.xlsx",index = False)
-# print(df)
+#print(df)
 
 # import worker list
 url = "https://raw.githubusercontent.com/JieXiong0111/TimeData_Processing/main/Worker%20List.xlsx"
@@ -71,7 +71,7 @@ df.rename(columns={'Name': 'ID'}, inplace=True)
 
 
 #print(df)
-#df.to_excel("C:/Users/jxiong/OneDrive - Simcona Electronics/Documents/Scanning Data Processing//Commented_BeforeInt/check6.xlsx", index=False)
+df.to_excel("C:/Users/jxiong/OneDrive - Simcona Electronics/Documents/Scanning Data Processing//Commented_BeforeInt/check6.xlsx", index=False)
 
 
 #--------Group data based on 15s time interval---------

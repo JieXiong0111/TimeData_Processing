@@ -27,8 +27,15 @@ if st.session_state.step == 1:
         st.error("⚠️ End date must be after start date.")
         st.stop()
 
-    if st.button("📥 Load Data from Database"):
-        # Connect to DB
+    # Button Setting
+    ol_spacer2, col_load, col_skip = st.columns([3, 1.2, 1.5])
+    with col_load:
+        load_clicked = st.button("Check Raw data")
+    with col_skip:
+        skip_clicked = st.button("Start Data Processing")
+
+    # ---- Load data ----
+    if load_clicked or skip_clicked:
         conn = pymysql.connect(
             host='172.20.0.166',
             user='jxiong',
@@ -41,12 +48,11 @@ if st.session_state.step == 1:
         WHERE DATE(scan_time) BETWEEN '{start_date}' AND '{end_date}'
         """
         df = pd.read_sql(query, conn)
-        conn.close()  #end connection with data
-    
+        conn.close()
+
         st.session_state.start_date = start_date
         st.session_state.end_date = end_date
 
-        # Clean and process
         if 'id' in df.columns:
             df.drop(columns=['id'], inplace=True)
 
@@ -60,7 +66,6 @@ if st.session_state.step == 1:
         df['Date'] = df['InputTime'].dt.date
         df.sort_values(by=['ID', 'InputTime'], inplace=True)
 
-        # Merge with worker names
         worker_url = "https://raw.githubusercontent.com/JieXiong0111/TimeData_Processing/main/Worker%20List.xlsx"
         df_worker = pd.read_excel(worker_url, engine="openpyxl")
         df = df.merge(df_worker[['ID', 'Name']], on='ID', how='left')
@@ -68,9 +73,12 @@ if st.session_state.step == 1:
 
         st.session_state.df_raw = df
 
-        st.session_state.step = 2
-        st.rerun()
+        if load_clicked:
+            st.session_state.step = 2
+        elif skip_clicked:
+            st.session_state.step = 3
 
+        st.rerun()
 
 
 
@@ -82,9 +90,6 @@ if st.session_state.step == 1:
 elif st.session_state.step == 2:
     st.header("Step 2: View Filtered Raw Data")
 
-    from io import BytesIO
-    from datetime import date
-
     df_raw = st.session_state.df_raw
 
     # ---------- Worker & Date Picker ----------
@@ -95,12 +100,27 @@ elif st.session_state.step == 2:
     with col4:
         date_options = sorted(df_raw['Date'].dropna().unique().tolist())
         selected_date = st.selectbox("Select Date to View", date_options, index=len(date_options) - 1, key="date_selector")
+    
+
+    # ---------- Filter Data ----------
+    df_filtered = df_raw[
+        (df_raw['Name'] == selected_name) &
+        (df_raw['Date'] == selected_date)
+    ].reset_index(drop=True)
+
+    # ---------- Reroder Data ----------
+    ordered_cols = ['Date', 'Name'] + [col for col in df_filtered.columns if col not in ['Date', 'Name']]
+    df_editable = df_filtered[ordered_cols].copy()
+    df_editable.sort_values(by=['Date', 'Name','InputTime'], inplace=True)
+
+
 
     # ---------- Download Button ----------
     col_spacer, col_download = st.columns([5.5, 1])
     with col_download:
         output = BytesIO()
         df_download = st.session_state.df_raw.copy()
+        df_download = df_download[ordered_cols]
         df_download.to_excel(output, index=False, engine='openpyxl')
         output.seek(0)
 
@@ -119,16 +139,6 @@ elif st.session_state.step == 2:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-    # ---------- Filter Data ----------
-    df_filtered = df_raw[
-        (df_raw['Name'] == selected_name) &
-        (df_raw['Date'] == selected_date)
-    ].reset_index(drop=True)
-
-    # ---------- Reroder Data ----------
-    ordered_cols = ['Date', 'Name'] + [col for col in df_filtered.columns if col not in ['Date', 'Name']]
-    df_editable = df_filtered[ordered_cols].copy()
-
     # ---------- Show Table ----------
     st.dataframe(
         df_editable,
@@ -139,18 +149,11 @@ elif st.session_state.step == 2:
     )
 
     # ---------- Back&Continue Buttons ----------
-    col_back, col_spacer2, col_continue = st.columns([1, 5, 1])
+    col_back, col_spacer2 = st.columns([1, 5])
 
     with col_back:
         if st.button("Back"):
             st.session_state.step = 1
-            st.rerun()
-
-    with col_continue:
-        if st.button("Continue"):
-            st.session_state.df_raw['Date'] = pd.to_datetime(st.session_state.df_raw['Date'], errors='coerce').dt.date
-            st.session_state.df_output1 = st.session_state.df_raw
-            st.session_state.step = 3
             st.rerun()
 
 
@@ -161,10 +164,9 @@ elif st.session_state.step == 2:
 elif st.session_state.step == 3:
     st.header("Step 3: Data Processing —— Stage 1")
 
-    from io import BytesIO
-
     # Get data from step2
-    df_output1 = st.session_state.df_output1.copy()
+    df_raw = st.session_state.df_raw.copy()
+
 
     #--------Group data based on 15s time interval---------
     import re
@@ -190,7 +192,7 @@ elif st.session_state.step == 3:
 
         return df.groupby('Name', group_keys=False).apply(group_scans)
 
-    df = time_based_grouping(df_output1)
+    df = time_based_grouping(df_raw)
 
     #--------integrate matched data--------------
     def aggregate_group(group):
@@ -259,7 +261,7 @@ elif st.session_state.step == 3:
 
     df.drop(columns=['Remark_Job', 'Remark_Seq', 'Remark_Status'], inplace=True)
     df = df[['Date', 'Name', 'Job_Number', 'Sequence', 'Time', 'Status', 'Remark']]
-    df.sort_values(by=['Date', 'Name'], inplace=True)
+    df.sort_values(by=['Date', 'Name','Time'], inplace=True)
 
     st.session_state.df_output2 = df.copy()
 
@@ -316,8 +318,8 @@ elif st.session_state.step == 3:
 
 # ---------- Upload file ----------
     st.divider()
-    st.subheader("📤 Upload Additional File for Next Step")
-    uploaded_file = st.file_uploader("Choose a file", type=["xlsx", "csv"])
+    st.subheader("📤 Upload File")
+    uploaded_file = st.file_uploader("Upload a file with cleaned data", type=["xlsx", "csv"])
 
     if uploaded_file:
         if uploaded_file.name.endswith(".xlsx"):
@@ -336,7 +338,7 @@ elif st.session_state.step == 3:
 
     with col_back:
         if st.button("Back", key="back_to_step2"):
-            st.session_state.step = 2
+            st.session_state.step = 1
             st.rerun()
 
     with col_continue:
@@ -359,9 +361,6 @@ elif st.session_state.step == 3:
 elif st.session_state.step == 4:
     st.header("Step 4: Data Processing —— Stage 2")
 
-    from datetime import time
-    from io import BytesIO
-
     df_step4 = st.session_state.df_step4_input.copy()
 
     df = df_step4.drop(columns=['Remark'], errors='ignore')
@@ -379,35 +378,36 @@ elif st.session_state.step == 4:
     df_dur['Date'] = pd.to_datetime(df_dur['Date']).dt.date
 
     result = []
-    used_end_times = set()
-
     group_keys = ['Name', 'Job_Number', 'Sequence', 'Date']
+    used_end_times = set()  
     for keys, group in df_dur.groupby(group_keys):
         name, job, seq, date = keys
         group = group.sort_values(by='Time').reset_index(drop=True)
+ 
+        # Order start time from latest to earliest
+        starts = group[group['Status'] == 'Start'].sort_values(by='Time', ascending=False).reset_index(drop=True)
+        ends_combined = group[group['Status'].isin(['End', 'End Partially'])].reset_index(drop=True)
 
-        starts = group[group['Status'] == 'Start']
-        ends_combined = group[group['Status'].isin(['End', 'End Partially'])]
-
-        end_idx = 0
         for _, start_row in starts.iterrows():
-            while end_idx < len(ends_combined) and ends_combined.iloc[end_idx]['Time'] <= start_row['Time']:
-                end_idx += 1
+            matched = False
 
-            if end_idx < len(ends_combined):
-                end_row = ends_combined.iloc[end_idx]
-                result.append({
-                    'Name': name,
-                    'Date': date,
-                    'Job_Number': job,
-                    'Sequence': seq,
-                    'StartTime': start_row['Time'],
-                    'EndTime': end_row['Time'],
-                    'Comment': ''
-                })
-                used_end_times.add(end_row['Time'])
-                end_idx += 1
-            else:
+            for _, end_row in ends_combined.iterrows():
+                end_time = end_row['Time']
+                if end_time > start_row['Time'] and end_time not in used_end_times:
+                    result.append({
+                        'Name': name,
+                        'Date': date,
+                        'Job_Number': job,
+                        'Sequence': seq,
+                        'StartTime': start_row['Time'],
+                        'EndTime': end_time,
+                        'Comment': ''
+                    })
+                    used_end_times.add(end_time)
+                    matched = True
+                    break
+
+            if not matched:
                 result.append({
                     'Name': name,
                     'Date': date,
@@ -417,6 +417,7 @@ elif st.session_state.step == 4:
                     'EndTime': pd.NaT,
                     'Comment': 'Missing End'
                 })
+
 
     # End without corresponding start
     all_ends = df_dur[df_dur['Status'].isin(['End', 'End Partially'])]
@@ -463,7 +464,10 @@ elif st.session_state.step == 4:
         df_dur.at[idx, 'Comment'] = comments.strip()
 
     df_dur = df_dur[['Date', 'Name', 'Job_Number', 'Sequence', 'StartTime', 'EndTime', 'Comment']]
-    df_dur.sort_values(by=['Date', 'Name'], inplace=True)
+    df_dur['MinTime'] = df_dur[['StartTime', 'EndTime']].min(axis=1)
+    df_dur.sort_values(by=['Date', 'Name', 'MinTime'], inplace=True)
+    df_dur.drop(columns=['MinTime'], inplace=True)
+
 
     st.session_state.df_output4 = df_dur
 
@@ -508,14 +512,15 @@ elif st.session_state.step == 4:
             "EndTime": st.column_config.DatetimeColumn("End Time", format="HH:mm:ss"),
             "Sequence": st.column_config.TextColumn("Sequence", width=80),
             "Job_Number": st.column_config.TextColumn("Job Number", width=100),
+            "Comment": st.column_config.TextColumn("Comment", width=250),
         }
     )
 
 
 # ---------- File upload ----------
     st.divider()
-    st.subheader("📤 Upload Additional File for Step 5")
-    uploaded_file_step4 = st.file_uploader("Upload a file for Step 5", type=["xlsx", "csv"], key="step4_file_uploader")
+    st.subheader("📤 Upload File")
+    uploaded_file_step4 = st.file_uploader("Upload a file with cleaned data", type=["xlsx", "csv"], key="step4_file_uploader")
 
     if uploaded_file_step4:
         if uploaded_file_step4.name.endswith(".xlsx"):
@@ -534,7 +539,7 @@ elif st.session_state.step == 4:
 
     with col_continue:
         if st.button("Continue", key="go_to_step5"):
-            st.session_state.clicked_continue = True  # 记录一下点击了Continue
+            st.session_state.clicked_continue = True
 
     if st.session_state.get("clicked_continue", False):
         if "df_step5_input" not in st.session_state:
@@ -551,8 +556,6 @@ elif st.session_state.step == 4:
 #--------------------STEP5--------------------------------
 elif st.session_state.step == 5:
     st.header("Step 5: Final Review")
-
-    from io import BytesIO
 
     # load data
     df_dur = st.session_state.df_step5_input.copy()
@@ -595,6 +598,25 @@ elif st.session_state.step == 5:
 
     merged_df['Date'] = pd.to_datetime(merged_df['Date']).dt.date
 
+    #-------------------Group by Week---------------
+    # Copy a clean version for weekly summary
+    weekly_df = merged_df.copy()
+
+    # Add Week column
+    weekly_df['Week'] = pd.to_datetime(weekly_df['Date']).dt.to_period('W').apply(lambda r: r.start_time)
+
+    # Group by week
+    weekly_summary = weekly_df.groupby(
+        ['Week', 'Name', 'Number', 'Job_Number', 'Sequence'],
+        as_index=False
+    ).agg({
+        'Duration_Hours': 'sum',
+        'Units_Completed': 'sum'
+    })
+
+    # Format Week column
+    weekly_summary['Week'] = weekly_summary['Week'].dt.strftime('%Y-%m-%d')
+
     # ------------------- Layout design -------------------
     col1, col2 = st.columns(2)
     with col1:
@@ -622,7 +644,7 @@ elif st.session_state.step == 5:
     )
 
     # ------------------- Download button -------------------
-    col_spacer, col_download = st.columns([5, 1])
+    col_reload, col_spacer, col_download, col_downloadw = st.columns([1.2, 3, 1.5,1.8])
 
     with col_download:
         output = BytesIO()
@@ -633,12 +655,38 @@ elif st.session_state.step == 5:
         end = st.session_state.get("end_date", date.today())
 
         if start == end:
-            file_name = f"FinalData_{start}.xlsx"
+            file_name = f"FinalDailyData_{start}.xlsx"
         else:
-            file_name = f"FinalData_{start}_to_{end}.xlsx"
+            file_name = f"FinalDailyData_{start}_to_{end}.xlsx"
 
         st.download_button(
-            label="Download",
+            label="Daily Summary",
+            data=output.getvalue(),
+            file_name=file_name,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+    with col_reload:
+        if st.button("Start Over"):
+           st.session_state.clear()  
+           st.rerun()  
+
+    
+    with col_downloadw:
+        output = BytesIO()
+        weekly_summary.to_excel(output, index=False, engine='openpyxl')
+        output.seek(0)
+
+        start = st.session_state.get("start_date", date.today())
+        end = st.session_state.get("end_date", date.today())
+
+        if start == end:
+            file_name = f"FinalWeeklyData_{start}.xlsx"
+        else:
+            file_name = f"FinalWeeklyData_{start}_to_{end}.xlsx"
+    
+        st.download_button(
+            label="Weekly Summary",
             data=output.getvalue(),
             file_name=file_name,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
