@@ -15,7 +15,7 @@ if "step" not in st.session_state:
 
 # ------------------------ STEP 1 ----------------------
 if st.session_state.step == 1:
-    st.header("Step 1: Select Date Range to Extract Raw Data")
+    st.header("Get Started: Extract Desired Raw Data")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -88,7 +88,7 @@ if st.session_state.step == 1:
 
 #----------------------- STEP2-----------------------------  
 elif st.session_state.step == 2:
-    st.header("Step 2: View Filtered Raw Data")
+    st.header("Raw Data View")
 
     df_raw = st.session_state.df_raw
 
@@ -162,7 +162,7 @@ elif st.session_state.step == 2:
 
 #------------------------------STEP 3--------------------------------------
 elif st.session_state.step == 3:
-    st.header("Step 3: Data Processing —— Stage 1")
+    st.header("Data Processing —— Stage 1")
 
     # Get data from step2
     df_raw = st.session_state.df_raw.copy()
@@ -359,7 +359,7 @@ elif st.session_state.step == 3:
 
 #--------------------STEP4-------------------------
 elif st.session_state.step == 4:
-    st.header("Step 4: Data Processing —— Stage 2")
+    st.header("Data Processing —— Stage 2")
 
     df_step4 = st.session_state.df_step4_input.copy()
 
@@ -555,7 +555,7 @@ elif st.session_state.step == 4:
 
 #--------------------STEP5--------------------------------
 elif st.session_state.step == 5:
-    st.header("Step 5: Final Review")
+    st.header("Final Review")
 
     # load data
     df_dur = st.session_state.df_step5_input.copy()
@@ -644,7 +644,7 @@ elif st.session_state.step == 5:
     )
 
     # ------------------- Download button -------------------
-    col_reload, col_spacer, col_download, col_downloadw = st.columns([1.2, 3, 1.5,1.8])
+    col_reload, col_spacer, col_download, col_downloadw = st.columns([1.2, 3, 1.55,1.8])
 
     with col_download:
         output = BytesIO()
