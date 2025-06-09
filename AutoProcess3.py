@@ -4,6 +4,7 @@ import pymysql
 from datetime import datetime, date, time
 import io
 from io import BytesIO
+import re
 
 st.title("📊 Worker Time Data Portal")
 
@@ -28,11 +29,17 @@ if st.session_state.step == 1:
         st.stop()
 
     # Button Setting
-    ol_spacer2, col_load, col_skip = st.columns([3, 1.2, 1.5])
+    col_load, ol_spacer2, col_skip, col_misc = st.columns([1.5, 2.5, 1.8, 1])
     with col_load:
-        load_clicked = st.button("Check Raw data")
+        load_clicked = st.button("Check Raw Data")
     with col_skip:
         skip_clicked = st.button("Start Data Processing")
+    with col_misc:
+        misc_clicked = st.button("Get MISC")       
+
+    if misc_clicked:
+        st.session_state.step = 6
+        st.rerun()
 
     # ---- Load data ----
     if load_clicked or skip_clicked:
@@ -86,7 +93,9 @@ if st.session_state.step == 1:
 
 
 
-#----------------------- STEP2-----------------------------  
+
+
+#----------------------- Raw Data Check-----------------------------  
 elif st.session_state.step == 2:
     st.header("Raw Data View")
 
@@ -148,7 +157,7 @@ elif st.session_state.step == 2:
         },
     )
 
-    # ---------- Back&Continue Buttons ----------
+    # ---------- Back Buttons ----------
     col_back, col_spacer2 = st.columns([1, 5])
 
     with col_back:
@@ -160,7 +169,7 @@ elif st.session_state.step == 2:
 
 
 
-#------------------------------STEP 3--------------------------------------
+#------------------------------Stage 1--------------------------------------
 elif st.session_state.step == 3:
     st.header("Data Processing —— Stage 1")
 
@@ -169,8 +178,22 @@ elif st.session_state.step == 3:
 
 
     #--------Group data based on 15s time interval---------
-    import re
+    # Change the status to the same format (end partially)
+    def format_end_partiall(df: pd.DataFrame, col: str = "input") -> pd.DataFrame:
+        df[col] = (
+            df[col]
+            .astype(str)                    
+            .str.strip()                    
+            .replace(
+                to_replace=r'(?i)^End partiall$', 
+                value='End Partially',      
+                regex=True
+            )
+        )
+        return df
     
+    df_raw = format_end_partiall(df_raw, col = "Input")
+
     def time_based_grouping(df):
         df = df.sort_values(by=['Name', 'InputTime']).reset_index(drop=True)
         df['Group'] = 0
@@ -193,7 +216,7 @@ elif st.session_state.step == 3:
         return df.groupby('Name', group_keys=False).apply(group_scans)
 
     df = time_based_grouping(df_raw)
-
+    
     #--------integrate matched data--------------
     def aggregate_group(group):
         result = {
@@ -204,7 +227,7 @@ elif st.session_state.step == 3:
         job = group.loc[group['Input'].str.contains(r'^[A-Za-z]\d{5}$', na=False), 'Input']
         result['Job_Number'] = job.iloc[-1] if not job.empty else 'NA'
 
-        seq = group.loc[group['Input'].apply(lambda x: bool(re.fullmatch(r'\d{3}', str(x))) or str(x) == 'Training'), 'Input']
+        seq = group.loc[group['Input'].apply(lambda x: bool(re.fullmatch(r'\d{3}', str(x))) or str(x) == 'Training' or str(x) == 'Rework'), 'Input']
         result['Sequence'] = seq.iloc[-1] if not seq.empty else 'NA'
 
         status = group.loc[group['Input'].isin(['Start', 'End','End Partially']), 'Input']
@@ -212,12 +235,14 @@ elif st.session_state.step == 3:
         
         if result['Sequence'] == 'Training':
             result['Job_Number'] = 'M00000'
+        elif result['Sequence'] == 'Rework':
+              result['Job_Number'] = 'R00000'
 
         return pd.Series(result)
 
     df = df[
         df['Input'].str.match(r'^[A-Za-z]\d{5}$', na=False) |
-        df['Input'].str.match(r'^\d{3}$|^Training$', na=False) |
+        df['Input'].str.match(r'^\d{3}$|^Training$|^Rework$', na=False) |
         df['Input'].isin(['Start', 'End','End Partially'])
     ]
 
@@ -348,7 +373,7 @@ elif st.session_state.step == 3:
 # Alert showing
     if st.session_state.get("clicked_continue_to_step4", False):
         if "df_step4_input" not in st.session_state:
-            st.error("⚠️ Please upload a file before continuing to Step 4.")
+            st.error("⚠️ Please upload a file before continuing.")
         else:
             st.session_state.step = 4
             st.rerun()
@@ -357,7 +382,7 @@ elif st.session_state.step == 3:
 
 
 
-#--------------------STEP4-------------------------
+#-------------------Stage 2-------------------------
 elif st.session_state.step == 4:
     st.header("Data Processing —— Stage 2")
 
@@ -371,6 +396,9 @@ elif st.session_state.step == 4:
     units_completed = completed_df.groupby(['Name', 'Date', 'Job_Number', 'Sequence']) \
         .size() \
         .reset_index(name='Units_Completed')
+    
+    mask = units_completed['Sequence'].isin(['Training', 'Rework'])
+    units_completed.loc[mask, 'Units_Completed'] = 0
 
     # Save it for final merge
     st.session_state.units_completed = units_completed
@@ -543,7 +571,7 @@ elif st.session_state.step == 4:
 
     if st.session_state.get("clicked_continue", False):
         if "df_step5_input" not in st.session_state:
-            st.error("⚠️ Please upload a file before proceeding to Step 5.")
+            st.error("⚠️ Please upload a file before continuing.")
         else:
             st.session_state.step = 5
             st.rerun()
@@ -553,7 +581,7 @@ elif st.session_state.step == 4:
 
 
 
-#--------------------STEP5--------------------------------
+#--------------------Final Output--------------------------------
 elif st.session_state.step == 5:
     st.header("Final Review")
 
@@ -592,13 +620,13 @@ elif st.session_state.step == 5:
     grouped_duration = Duration_df.groupby(['Job_Number', 'Sequence'])['Duration_Hours'].sum().reset_index()
     grouped_duration.rename(columns={'Duration_Hours': 'Total_Duration'}, inplace=True)
 
-    # ------------------- Merge -------------------
+    # ------------------- Merge -------------------------
     merged_df = pd.merge(Duration_df, units_completed, on=['Date', 'Name', 'Job_Number', 'Sequence'], how='left')
     merged_df['Units_Completed'] = merged_df['Units_Completed'].fillna(0).astype(int)
 
     merged_df['Date'] = pd.to_datetime(merged_df['Date']).dt.date
 
-    #-------------------Group by Week---------------
+    #-------------------Group by Week--------------------
     # Copy a clean version for weekly summary
     weekly_df = merged_df.copy()
 
@@ -644,7 +672,7 @@ elif st.session_state.step == 5:
     )
 
     # ------------------- Download button -------------------
-    col_reload, col_spacer, col_download, col_downloadw = st.columns([1.2, 3, 1.55,1.8])
+    col_reload, col_spacer, col_download, col_downloadw= st.columns([1.2, 3, 1.55,1.8])
 
     with col_download:
         output = BytesIO()
@@ -691,3 +719,105 @@ elif st.session_state.step == 5:
             file_name=file_name,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+    
+    col_spacer, col_misc = st.columns([8, 2])
+    with col_misc:
+        if st.button("➡️ Get MISC", key="to_step6_button"):
+            st.session_state.step = 6
+            st.rerun()
+
+
+
+
+# ------------------------- MISC Calculation -------------------------
+elif st.session_state.step == 6:
+    st.header("Get MISC")
+
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        uploaded_file1 = st.file_uploader(
+            "Work Hour & Units Completed",
+            type=["xlsx"],
+            key="upload1"
+        )
+    with col2:
+        uploaded_file2 = st.file_uploader(
+            "Clock-In & Out Hours From ADP",
+            type=["xlsx"],
+            key="upload2"
+        )
+
+    if uploaded_file1 is not None:
+        try:
+            df1 = pd.read_excel(uploaded_file1, engine="openpyxl")
+            df1 = df1.groupby(['Name', 'Number'])['Duration_Hours'] \
+                     .sum().reset_index()
+            st.session_state.df_file1 = df1
+        except Exception:
+            st.error("Please upload the correct Excel(.xlsx) file")
+
+    if uploaded_file2 is not None:
+        try:
+            tmp = pd.read_excel(
+                uploaded_file2,
+                sheet_name="Report1",
+                engine="openpyxl",
+                skiprows=3,
+                nrows=2,
+                header=None
+            )
+            fo2 = pd.read_excel(
+                uploaded_file2,
+                sheet_name="Report1",
+                engine="openpyxl",
+                skiprows=5,
+                header=None
+            )
+
+            title = list(tmp.iloc[0, :3]) + list(tmp.iloc[1, 3:])
+            fo2.columns = title
+            fo2["Name"] = fo2["First Name"] + " " + fo2["Last Name"]
+            fo2 = fo2[["Name", "Variance"]]
+            fo2 = fo2[fo2["Variance"] > 0]
+            st.session_state.df_file2 = fo2
+        except Exception:
+            st.error("Please upload the correct Excel(.xlsx) file")
+
+    if (
+        "df_file1" in st.session_state
+        and "df_file2" in st.session_state
+        and st.button("Load and Merge", key="merge_step6")
+    ):
+        df1 = st.session_state.df_file1
+        df2 = st.session_state.df_file2
+        df_merged = pd.merge(df1, df2, on="Name", how="inner")
+        df_merged['MISC Hours'] = df_merged['Variance'] - df_merged['Duration_Hours']
+        st.session_state.result = df_merged[['Name','Number','MISC Hours']]
+
+    if "result" in st.session_state:
+        result = st.session_state.result
+        st.subheader("MISC Hours Result")
+        st.dataframe(result, use_container_width=True)
+
+        col_reset, col_spacer, col_dl = st.columns([1.5,4.7, 1.1])
+        with col_reset:
+            if st.button("Start Over", key="reset_step6"):
+                st.session_state.clear()
+                st.session_state.step = 1 
+                st.rerun()
+
+        with col_dl:
+            buffer = BytesIO()
+            result.to_excel(buffer, index=False, engine="openpyxl")
+            buffer.seek(0)
+            st.download_button(
+                label="Download",
+                data=buffer.getvalue(),
+                file_name="MISC_Result.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+
+
+
+    
