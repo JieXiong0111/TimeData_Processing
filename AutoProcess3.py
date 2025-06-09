@@ -732,6 +732,11 @@ elif st.session_state.step == 5:
 # ------------------------- MISC Calculation -------------------------
 elif st.session_state.step == 6:
     st.header("Get MISC")
+    st.markdown(
+    "<p style='color:red; font-size:15px; font-weight:light;'>*Please ensure that both files cover the same date range</p>",
+    unsafe_allow_html=True
+)
+
 
     col1, col2 = st.columns([1, 1])
     with col1:
