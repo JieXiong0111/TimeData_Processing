@@ -185,7 +185,7 @@ elif st.session_state.step == 3:
             .astype(str)                    
             .str.strip()                    
             .replace(
-                to_replace=r'(?i)^End partiall$', 
+                to_replace=r'(?i)^(End Partiall|EndP)$', 
                 value='End Partially',      
                 regex=True
             )
@@ -224,25 +224,25 @@ elif st.session_state.step == 3:
             'Time': group['InputTime'].max()
         }
 
-        job = group.loc[group['Input'].str.contains(r'^[A-Za-z]\d{5}$', na=False), 'Input']
+        job = group.loc[group['Input'].str.contains(r'^[A-Za-z]\d{5}$|Training|Rework', na=False), 'Input']
         result['Job_Number'] = job.iloc[-1] if not job.empty else 'NA'
 
-        seq = group.loc[group['Input'].apply(lambda x: bool(re.fullmatch(r'\d{3}', str(x))) or str(x) == 'Training' or str(x) == 'Rework'), 'Input']
+        seq = group.loc[group['Input'].apply(lambda x: bool(re.fullmatch(r'\d{3}', str(x)))), 'Input']
         result['Sequence'] = seq.iloc[-1] if not seq.empty else 'NA'
 
         status = group.loc[group['Input'].isin(['Start', 'End','End Partially']), 'Input']
         result['Status'] = status.iloc[-1] if not status.empty else 'NA'
         
-        if result['Sequence'] == 'Training':
-            result['Job_Number'] = 'M00000'
-        elif result['Sequence'] == 'Rework':
-              result['Job_Number'] = 'R00000'
+        if result['Job_Number'] == 'Training':
+            result['Sequence'] = 'TR'
+        elif result['Job_Number'] == 'Rework':
+              result['Sequence'] = 'RE'
 
         return pd.Series(result)
 
     df = df[
-        df['Input'].str.match(r'^[A-Za-z]\d{5}$', na=False) |
-        df['Input'].str.match(r'^\d{3}$|^Training$|^Rework$', na=False) |
+        df['Input'].str.match(r'^[A-Za-z]\d{5}$|^Training$|^Rework$', na=False) |
+        df['Input'].str.match(r'^\d{3}$', na=False) |
         df['Input'].isin(['Start', 'End','End Partially'])
     ]
 
@@ -397,7 +397,7 @@ elif st.session_state.step == 4:
         .size() \
         .reset_index(name='Units_Completed')
     
-    mask = units_completed['Sequence'].isin(['Training', 'Rework'])
+    mask = units_completed['Job_Number'].isin(['Training', 'Rework'])
     units_completed.loc[mask, 'Units_Completed'] = 0
 
     # Save it for final merge
