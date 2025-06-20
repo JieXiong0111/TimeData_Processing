@@ -740,11 +740,13 @@ elif st.session_state.step == 6:
 
     col1, col2 = st.columns([1, 1])
     with col1:
-        uploaded_file1 = st.file_uploader(
+        uploaded_files1 = st.file_uploader(
             "Work Hour & Units Completed",
             type=["xlsx"],
-            key="upload1"
+            key="upload1",
+            accept_multiple_files=True
         )
+
     with col2:
         uploaded_file2 = st.file_uploader(
             "Clock-In & Out Hours From ADP",
@@ -752,52 +754,60 @@ elif st.session_state.step == 6:
             key="upload2"
         )
 
-    if uploaded_file1 is not None:
-        try:
-            df1 = pd.read_excel(uploaded_file1, engine="openpyxl")
-            df1 = df1.groupby(['Name', 'Number'])['Duration_Hours'] \
-                     .sum().reset_index()
-            st.session_state.df_file1 = df1
-        except Exception:
-            st.error("Please upload the correct Excel(.xlsx) file")
 
-    if uploaded_file2 is not None:
+    if uploaded_files1: 
+        try:
+            df_list = []
+            for f in uploaded_files1:
+                df = pd.read_excel(f, engine="openpyxl")
+                df_list.append(df)
+            df1_combined = pd.concat(df_list, ignore_index=True)
+            df1_grouped = (
+                df1_combined
+                .groupby(['Name', 'Number'])['Duration_Hours']
+                .sum()
+                .reset_index()
+            )
+            st.session_state.df_file1 = df1_grouped
+            st.success("Work Hour files have been successfully uploaded.")
+        except Exception as e:
+            st.error(f"Error processing Work Hour files: {e}")
+
+
+    if uploaded_file2:
         try:
             tmp = pd.read_excel(
                 uploaded_file2,
                 sheet_name="Report1",
                 engine="openpyxl",
-                skiprows=3,
-                nrows=2,
-                header=None
+                skiprows=3, nrows=2, header=None
             )
             fo2 = pd.read_excel(
                 uploaded_file2,
                 sheet_name="Report1",
                 engine="openpyxl",
-                skiprows=5,
-                header=None
+                skiprows=5, header=None
             )
-
             title = list(tmp.iloc[0, :3]) + list(tmp.iloc[1, 3:])
             fo2.columns = title
             fo2["Name"] = fo2["First Name"] + " " + fo2["Last Name"]
-            fo2 = fo2[["Name", "Variance"]]
-            fo2 = fo2[fo2["Variance"] > 0]
+            fo2 = fo2.loc[fo2["Variance"] > 0, ["Name", "Variance"]]
             st.session_state.df_file2 = fo2
-        except Exception:
-            st.error("Please upload the correct Excel(.xlsx) file")
+            st.success("ADP data has been processed successfully.")
+        except Exception as e:
+            st.error(f"Please upload a valid ADP Excel (.xlsx) file: {e}")
 
-    if (
-        "df_file1" in st.session_state
-        and "df_file2" in st.session_state
-        and st.button("Load and Merge", key="merge_step6")
-    ):
-        df1 = st.session_state.df_file1
-        df2 = st.session_state.df_file2
-        df_merged = pd.merge(df1, df2, on="Name", how="inner")
-        df_merged['MISC Hours'] = df_merged['Variance'] - df_merged['Duration_Hours']
-        st.session_state.result = df_merged[['Name','Number','MISC Hours']]
+
+        if (
+            "df_file1" in st.session_state
+            and "df_file2" in st.session_state
+            and st.button("Load and Merge", key="merge_step6")
+        ):
+            df1 = st.session_state.df_file1
+            df2 = st.session_state.df_file2
+            df_merged = pd.merge(df1, df2, on="Name", how="inner")
+            df_merged['MISC Hours'] = df_merged['Variance'] - df_merged['Duration_Hours']
+            st.session_state.result = df_merged[['Name','Number','MISC Hours']]
 
     if "result" in st.session_state:
         result = st.session_state.result
