@@ -13,7 +13,7 @@ if "step" not in st.session_state:
     st.session_state.step = 1
 
 
-
+ 
 # ------------------------ STEP 1 ----------------------
 if st.session_state.step == 1:
     st.header("Get Started: Extract Desired Raw Data")
@@ -69,6 +69,8 @@ if st.session_state.step == 1:
             'scan_time': 'InputTime'
         }, inplace=True)
 
+        df = df.assign(Input=df['Input'].str.split(':')).explode('Input').reset_index(drop=True)
+
         df['InputTime'] = pd.to_datetime(df['InputTime'].astype(str))
         df['Date'] = df['InputTime'].dt.date
         df.sort_values(by=['ID', 'InputTime'], inplace=True)
@@ -105,6 +107,7 @@ elif st.session_state.step == 2:
     col3, col4 = st.columns(2)
     with col3:
         worker_names = df_raw['Name'].dropna().unique().tolist()
+        worker_names = sorted(worker_names)
         selected_name = st.selectbox("Select Worker", worker_names, key="worker_selector")
     with col4:
         date_options = sorted(df_raw['Date'].dropna().unique().tolist())
@@ -224,7 +227,7 @@ elif st.session_state.step == 3:
             'Time': group['InputTime'].max()
         }
 
-        job = group.loc[group['Input'].str.contains(r'^[A-Za-z]\d{5}$|Training|Rework', na=False), 'Input']
+        job = group.loc[group['Input'].str.contains(r'^[A-Za-z]{1,2}\d{5}$|Training|Rework', na=False), 'Input']
         result['Job_Number'] = job.iloc[-1] if not job.empty else 'NA'
 
         seq = group.loc[group['Input'].apply(lambda x: bool(re.fullmatch(r'\d{3}', str(x)))), 'Input']
@@ -241,7 +244,7 @@ elif st.session_state.step == 3:
         return pd.Series(result)
 
     df = df[
-        df['Input'].str.match(r'^[A-Za-z]\d{5}$|^Training$|^Rework$', na=False) |
+        df['Input'].str.match(r'^[A-Za-z]{1,2}\d{5}$|^Training$|^Rework$', na=False) |
         df['Input'].str.match(r'^\d{3}$', na=False) |
         df['Input'].isin(['Start', 'End','End Partially'])
     ]
@@ -254,6 +257,8 @@ elif st.session_state.step == 3:
 
     df['Date'] = df['Time'].dt.date
     df.sort_values(by=['Name', 'Time'], inplace=True)
+
+
 
     #-------------Fill in blank in Status-----------------
     def fill_missing_status(sub_df):
@@ -294,6 +299,7 @@ elif st.session_state.step == 3:
     col1, col2 = st.columns(2)
     with col1:
         worker_names = df['Name'].dropna().unique().tolist()
+        worker_names = sorted(worker_names)
         selected_name = st.selectbox("Select Worker", worker_names, key="step3_worker_selector")
     with col2:
         date_options = sorted(df['Date'].dropna().unique().tolist())
@@ -503,6 +509,7 @@ elif st.session_state.step == 4:
     col1, col2 = st.columns(2)
     with col1:
         worker_names = df_dur['Name'].dropna().unique().tolist()
+        worker_names = sorted(worker_names)
         selected_name = st.selectbox("Select Worker", worker_names, key="step4_worker_selector")
     with col2:
         date_options = sorted(df_dur['Date'].dropna().unique().tolist())
@@ -649,6 +656,7 @@ elif st.session_state.step == 5:
     col1, col2 = st.columns(2)
     with col1:
         worker_names = merged_df['Name'].dropna().unique().tolist()
+        worker_names = sorted(worker_names)
         selected_name = st.selectbox("Select Worker", worker_names, key="step5_worker_selector")
     with col2:
         date_options = sorted(merged_df['Date'].dropna().unique().tolist())
@@ -831,8 +839,5 @@ elif st.session_state.step == 6:
                 file_name="MISC_Result.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
-
-
-
 
     
