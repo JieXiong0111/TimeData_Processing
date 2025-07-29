@@ -770,12 +770,21 @@ elif st.session_state.step == 6:
                 df = pd.read_excel(f, engine="openpyxl")
                 df_list.append(df)
             df1_combined = pd.concat(df_list, ignore_index=True)
+           
+            df1_integrated = (
+                df1_combined
+                .groupby(['Name', 'Number', 'Job_Number', 'Sequence'])[['Duration_Hours', 'Units_Completed']]
+                .sum()
+                .reset_index()
+            )
+
             df1_grouped = (
                 df1_combined
                 .groupby(['Name', 'Number'])['Duration_Hours']
                 .sum()
                 .reset_index()
             )
+            st.session_state.df_file0 = df1_integrated
             st.session_state.df_file1 = df1_grouped
             st.success("Work Hour files have been successfully uploaded.")
         except Exception as e:
@@ -817,27 +826,43 @@ elif st.session_state.step == 6:
             df_merged['MISC Hours'] = df_merged['Variance'] - df_merged['Duration_Hours']
             st.session_state.result = df_merged[['Name','Number','MISC Hours']]
 
+
     if "result" in st.session_state:
         result = st.session_state.result
         st.subheader("MISC Hours Result")
         st.dataframe(result, use_container_width=True)
 
-        col_reset, col_spacer, col_dl = st.columns([1.5,4.7, 1.1])
+        col_reset, col_dl_grouped, col_spacer, col_dl_misc= st.columns([1.3, 2.5, 2.8, 1.8])
+
         with col_reset:
             if st.button("Start Over", key="reset_step6"):
                 st.session_state.clear()
                 st.session_state.step = 1 
                 st.rerun()
+        
+        with col_dl_grouped:
+            if "df_file0" in st.session_state:
+                buffer_grouped = BytesIO()
+                st.session_state.df_file0.to_excel(buffer_grouped, index=False, engine="openpyxl")
+                buffer_grouped.seek(0)
+                st.download_button(
+                    label="Download Work Hours",
+                    data=buffer_grouped.getvalue(),
+                    file_name="Work_Hours_Integrated.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="download_grouped"
+                )
 
-        with col_dl:
+        with col_dl_misc:
             buffer = BytesIO()
             result.to_excel(buffer, index=False, engine="openpyxl")
             buffer.seek(0)
             st.download_button(
-                label="Download",
+                label="Download MISC",
                 data=buffer.getvalue(),
                 file_name="MISC_Result.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_misc"
             )
 
     
