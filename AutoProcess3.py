@@ -208,7 +208,7 @@ elif st.session_state.step == 3:
 
             for _, row in sub_df.iterrows():
                 time = row['InputTime']
-                if group_start_time is None or (time - group_start_time).total_seconds() > 15:
+                if group_start_time is None or (time - group_start_time).total_seconds() > 20:
                     group += 1
                     group_start_time = time
                 group_ids.append(group)
@@ -354,9 +354,9 @@ elif st.session_state.step == 3:
 
     if uploaded_file:
         if uploaded_file.name.endswith(".xlsx"):
-            upload_df = pd.read_excel(uploaded_file, engine='openpyxl', dtype={'Sequence': str})
+            upload_df = pd.read_excel(uploaded_file, engine='openpyxl', dtype={'Sequence': str, 'Job_Number': str, 'Status': str})
         else:
-            upload_df = pd.read_csv(uploaded_file, dtype={'Sequence': str})
+            upload_df = pd.read_csv(uploaded_file, dtype={'Sequence': str, 'Job_Number': str, 'Status': str})
 
         st.success(f"File '{uploaded_file.name}' uploaded successfully!")
         st.dataframe(upload_df.head(), use_container_width=True)
@@ -374,7 +374,7 @@ elif st.session_state.step == 3:
 
     with col_continue:
         if st.button("Continue", key="go_to_step4"):
-            st.session_state.clicked_continue_to_step4 = True  # 记录一下点击
+            st.session_state.clicked_continue_to_step4 = True  
 
 # Alert showing
     if st.session_state.get("clicked_continue_to_step4", False):
@@ -765,12 +765,32 @@ elif st.session_state.step == 6:
 
     if uploaded_files1: 
         try:
+            expected_columns = [
+                "Name", "Number", "Job_Number", "Sequence",
+                "Duration_Hours", "Units_Completed"
+            ]
             df_list = []
             for f in uploaded_files1:
-                df = pd.read_excel(f, engine="openpyxl")
+                df = pd.read_excel(f, engine="openpyxl", dtype={"Sequence": str})
+                
+                # Normalize schema
+                for col in expected_columns:
+                    if col not in df.columns:
+                        df[col] = 0
+                df = df[expected_columns]
+                df = df.astype({
+                    "Name": str,
+                    "Number": str,
+                    "Job_Number": str,
+                    "Sequence": str,
+                    "Duration_Hours": float,
+                    "Units_Completed": int
+                })
+                
                 df_list.append(df)
+
             df1_combined = pd.concat(df_list, ignore_index=True)
-           
+            
             df1_integrated = (
                 df1_combined
                 .groupby(['Name', 'Number', 'Job_Number', 'Sequence'])[['Duration_Hours', 'Units_Completed']]
@@ -784,11 +804,13 @@ elif st.session_state.step == 6:
                 .sum()
                 .reset_index()
             )
+
             st.session_state.df_file0 = df1_integrated
             st.session_state.df_file1 = df1_grouped
-            st.success("Work Hour files have been successfully uploaded.")
+            st.success("Work Hour files have been successfully uploaded!")
         except Exception as e:
             st.error(f"Error processing Work Hour files: {e}")
+
 
 
     if uploaded_file2:
@@ -822,7 +844,7 @@ elif st.session_state.step == 6:
         ):
             df1 = st.session_state.df_file1
             df2 = st.session_state.df_file2
-            df_merged = pd.merge(df1, df2, on="Name", how="inner")
+            df_merged = pd.merge(df1, df2, on="Name", how="left")
             df_merged['MISC Hours'] = df_merged['Variance'] - df_merged['Duration_Hours']
             st.session_state.result = df_merged[['Name','Number','MISC Hours']]
 
