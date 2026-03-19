@@ -757,6 +757,56 @@ elif st.session_state.step == 5:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     
+    # ------------------- Serial Number Report -------------------
+    st.divider()
+    st.subheader("Serial Number Report")
+
+    sn_df = df_dur[df_dur['Serial_Number'].notna() & (df_dur['Serial_Number'] != '')].copy()
+    sn_df = sn_df[sn_df['EndTime'].notna()].copy()
+    sn_df['Duration_Hours'] = ((sn_df['EndTime'] - sn_df['StartTime']).dt.total_seconds() / 3600).round(2)
+
+    if sn_df.empty:
+        st.info("No serial number entries found in this dataset.")
+    else:
+        sn_report = (
+            sn_df.groupby(['Serial_Number', 'Job_Number', 'Sequence', 'Name', 'Date'])['Duration_Hours']
+            .sum()
+            .round(2)
+            .reset_index()
+        )
+        sn_report.sort_values(by=['Serial_Number', 'Date', 'Name'], inplace=True)
+
+        st.dataframe(
+            sn_report,
+            use_container_width=True,
+            column_config={
+                "Serial_Number": st.column_config.TextColumn("Serial Number", width="medium"),
+                "Job_Number": st.column_config.TextColumn("Job Number", width="small"),
+                "Sequence": st.column_config.TextColumn("Sequence", width="small"),
+                "Duration_Hours": st.column_config.NumberColumn("Duration (Hours)", format="%.2f"),
+                "Date": st.column_config.DateColumn("Date"),
+            }
+        )
+
+        col_sn_spacer, col_sn_download = st.columns([5.5, 1])
+        with col_sn_download:
+            sn_output = BytesIO()
+            sn_report.to_excel(sn_output, index=False, engine='openpyxl')
+            sn_output.seek(0)
+
+            start = st.session_state.get("start_date", date.today())
+            end = st.session_state.get("end_date", date.today())
+
+            sn_file_name = f"SerialNumber_Report_{start}.xlsx" if start == end else f"SerialNumber_Report_{start}_to_{end}.xlsx"
+
+            st.download_button(
+                label="Download SN Report",
+                data=sn_output.getvalue(),
+                file_name=sn_file_name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_sn_report"
+            )
+
     col_spacer, col_misc = st.columns([8, 2])
     with col_misc:
         if st.button("➡️ Get MISC", key="to_step6_button"):
