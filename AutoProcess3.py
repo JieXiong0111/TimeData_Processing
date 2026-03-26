@@ -8,7 +8,7 @@ import re
 
 st.title("📊 Worker Time Data Portal")
 
-worker_url = "C:/Users/bmiller/OneDrive - Simcona Electronics/Documents/Code/TimeData_Processing/Worker List.xlsx"
+worker_url = "https://raw.githubusercontent.com/JieXiong0111/TimeData_Processing/main/Worker%20List.xlsx"
 
 # ---------- Initialize Step ----------
 if "step" not in st.session_state:
@@ -85,8 +85,6 @@ if st.session_state.step == 1:
         df['Serial_Number'] = df['_sn'].where(sn_mask, '').fillna('')
         df.drop(columns=['_sn'], inplace=True)
 
-        #worker_url = "https://raw.githubusercontent.com/JieXiong0111/TimeData_Processing/main/Worker%20List.xlsx"
-        #worker_url = "C:/Users/bmiller/OneDrive - Simcona Electronics/Documents/Code/TimeData_Processing/Worker List.xlsx"
         df_worker = pd.read_excel(worker_url, engine="openpyxl")
         df = df.merge(df_worker[['ID', 'Name']], on='ID', how='left')
         df.drop(columns=['ID'], inplace=True)
@@ -628,7 +626,6 @@ elif st.session_state.step == 5:
     units_completed = st.session_state.units_completed.copy()
 
     # load Worker List 
-    #worker_url = "https://raw.githubusercontent.com/JieXiong0111/TimeData_Processing/main/Worker%20List.xlsx"
     df_worker = pd.read_excel(worker_url, engine='openpyxl')
     
     #data processing
