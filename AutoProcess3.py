@@ -773,8 +773,13 @@ elif st.session_state.step == 5:
         )
         sn_report.sort_values(by=['Serial_Number', 'Date', 'Name'], inplace=True)
 
+        sn_report_filtered = sn_report[
+            (sn_report['Name'] == selected_name) &
+            (sn_report['Date'] == selected_date)
+        ].reset_index(drop=True)
+
         st.dataframe(
-            sn_report,
+            sn_report_filtered,
             use_container_width=True,
             column_config={
                 "Serial_Number": st.column_config.TextColumn("Serial Number", width="medium"),
