@@ -8,6 +8,8 @@ import re
 
 st.title("📊 Worker Time Data Portal")
 
+worker_url = "https://raw.githubusercontent.com/JieXiong0111/TimeData_Processing/main/Worker%20List.xlsx"
+
 # ---------- Initialize Step ----------
 if "step" not in st.session_state:
     st.session_state.step = 1
@@ -69,13 +71,20 @@ if st.session_state.step == 1:
             'scan_time': 'InputTime'
         }, inplace=True)
 
+        df['_sn'] = df['Input'].str.extract(r'^[A-Za-z]{1,2}\d{5}:(.+)$', expand=False)
         df = df.assign(Input=df['Input'].str.split(':')).explode('Input').reset_index(drop=True)
 
         df['InputTime'] = pd.to_datetime(df['InputTime'].astype(str))
         df['Date'] = df['InputTime'].dt.date
         df.sort_values(by=['ID', 'InputTime'], inplace=True)
 
-        worker_url = "https://raw.githubusercontent.com/JieXiong0111/TimeData_Processing/main/Worker%20List.xlsx"
+        # SN rows: the half of the split that matches the extracted SN value
+        sn_mask = df['Input'] == df['_sn'].fillna('')
+        sn_mask = sn_mask & df['_sn'].notna() & (df['_sn'] != '')
+        df.loc[sn_mask, 'InputTime'] += pd.Timedelta(seconds=1)
+        df['Serial_Number'] = df['_sn'].where(sn_mask, '').fillna('')
+        df.drop(columns=['_sn'], inplace=True)
+
         df_worker = pd.read_excel(worker_url, engine="openpyxl")
         df = df.merge(df_worker[['ID', 'Name']], on='ID', how='left')
         df.drop(columns=['ID'], inplace=True)
@@ -227,15 +236,20 @@ elif st.session_state.step == 3:
             'Time': group['InputTime'].max()
         }
 
-        job = group.loc[group['Input'].str.contains(r'^[A-Za-z]{1,2}\d{5}$|Training|Rework', na=False), 'Input']
+        non_sn = group[group['Serial_Number'] == '']
+        sn_rows = group[group['Serial_Number'] != '']
+
+        job = non_sn.loc[non_sn['Input'].str.contains(r'^[A-Za-z]{1,2}\d{5}$|Training|Rework', na=False), 'Input']
         result['Job_Number'] = job.iloc[-1] if not job.empty else 'NA'
 
-        seq = group.loc[group['Input'].apply(lambda x: bool(re.fullmatch(r'\d{3}', str(x)))), 'Input']
+        seq = non_sn.loc[non_sn['Input'].apply(lambda x: bool(re.fullmatch(r'\d{3}', str(x)))), 'Input']
         result['Sequence'] = seq.iloc[-1] if not seq.empty else 'NA'
 
-        status = group.loc[group['Input'].isin(['Start', 'End','End Partially']), 'Input']
+        status = non_sn.loc[non_sn['Input'].isin(['Start', 'End','End Partially']), 'Input']
         result['Status'] = status.iloc[-1] if not status.empty else 'NA'
-        
+
+        result['Serial_Number'] = sn_rows['Serial_Number'].iloc[0] if not sn_rows.empty else ''
+
         if result['Job_Number'] == 'Training':
             result['Sequence'] = 'TR'
         elif result['Job_Number'] == 'Rework':
@@ -246,7 +260,8 @@ elif st.session_state.step == 3:
     df = df[
         df['Input'].str.match(r'^[A-Za-z]{1,2}\d{5}$|^Training$|^Rework$', na=False) |
         df['Input'].str.match(r'^\d{3}$', na=False) |
-        df['Input'].isin(['Start', 'End','End Partially'])
+        df['Input'].isin(['Start', 'End','End Partially']) |
+        (df['Serial_Number'] != '')
     ]
 
     df = df.groupby(['Name', 'Group'], as_index=False, group_keys=False).apply(aggregate_group)
@@ -290,7 +305,7 @@ elif st.session_state.step == 3:
     )
 
     df.drop(columns=['Remark_Job', 'Remark_Seq', 'Remark_Status'], inplace=True)
-    df = df[['Date', 'Name', 'Job_Number', 'Sequence', 'Time', 'Status', 'Remark']]
+    df = df[['Date', 'Name', 'Job_Number', 'Sequence', 'Serial_Number', 'Time', 'Status', 'Remark']]
     df.sort_values(by=['Date', 'Name','Time'], inplace=True)
 
     st.session_state.df_output2 = df.copy()
@@ -341,7 +356,8 @@ elif st.session_state.step == 3:
             "Time": st.column_config.TimeColumn("Time",width=80),
             "Remark": st.column_config.TextColumn("Remark", width="medium"),
             "Sequence": st.column_config.TextColumn("Sequence", width=80),
-            "Job_Number": st.column_config.TextColumn("Job Number", width=120)
+            "Job_Number": st.column_config.TextColumn("Job Number", width=120),
+            "Serial_Number": st.column_config.TextColumn("Serial Number", width="medium"),
         }
     )
 
@@ -395,7 +411,10 @@ elif st.session_state.step == 4:
     df_step4 = st.session_state.df_step4_input.copy()
 
     df = df_step4.drop(columns=['Remark'], errors='ignore')
-    df = df[['Name', 'Date', 'Job_Number', 'Sequence', 'Time', 'Status']]
+    if 'Serial_Number' not in df.columns:
+        df['Serial_Number'] = ''
+    df['Serial_Number'] = df['Serial_Number'].fillna('')
+    df = df[['Name', 'Date', 'Job_Number', 'Sequence', 'Serial_Number', 'Time', 'Status']]
 
     # ---- Units Completed Calculation ----
     completed_df = df[df['Status'] == 'End']
@@ -413,7 +432,7 @@ elif st.session_state.step == 4:
 
     result = []
     group_keys = ['Name', 'Job_Number', 'Sequence', 'Date']
-    used_end_times = set()  
+    used_end_times = set()
     for keys, group in df_dur.groupby(group_keys):
         name, job, seq, date = keys
         group = group.sort_values(by='Time').reset_index(drop=True)
@@ -433,6 +452,7 @@ elif st.session_state.step == 4:
                         'Date': date,
                         'Job_Number': job,
                         'Sequence': seq,
+                        'Serial_Number': start_row['Serial_Number'],
                         'StartTime': start_row['Time'],
                         'EndTime': end_time,
                         'Comment': ''
@@ -447,6 +467,7 @@ elif st.session_state.step == 4:
                     'Date': date,
                     'Job_Number': job,
                     'Sequence': seq,
+                    'Serial_Number': start_row['Serial_Number'],
                     'StartTime': start_row['Time'],
                     'EndTime': pd.NaT,
                     'Comment': 'Missing End'
@@ -463,6 +484,7 @@ elif st.session_state.step == 4:
             'Date': end_row['Time'].date(),
             'Job_Number': end_row['Job_Number'],
             'Sequence': end_row['Sequence'],
+            'Serial_Number': end_row['Serial_Number'],
             'StartTime': pd.NaT,
             'EndTime': end_row['Time'],
             'Comment': 'Missing Start'
@@ -497,7 +519,7 @@ elif st.session_state.step == 4:
 
         df_dur.at[idx, 'Comment'] = comments.strip()
 
-    df_dur = df_dur[['Date', 'Name', 'Job_Number', 'Sequence', 'StartTime', 'EndTime', 'Comment']]
+    df_dur = df_dur[['Date', 'Name', 'Job_Number', 'Sequence', 'Serial_Number', 'StartTime', 'EndTime', 'Comment']]
     df_dur['MinTime'] = df_dur[['StartTime', 'EndTime']].min(axis=1)
     df_dur.sort_values(by=['Date', 'Name', 'MinTime'], inplace=True)
     df_dur.drop(columns=['MinTime'], inplace=True)
@@ -547,6 +569,7 @@ elif st.session_state.step == 4:
             "EndTime": st.column_config.DatetimeColumn("End Time", format="HH:mm:ss"),
             "Sequence": st.column_config.TextColumn("Sequence", width=80),
             "Job_Number": st.column_config.TextColumn("Job Number", width=100),
+            "Serial_Number": st.column_config.TextColumn("Serial Number", width="medium"),
             "Comment": st.column_config.TextColumn("Comment", width=250),
         }
     )
@@ -562,6 +585,10 @@ elif st.session_state.step == 4:
             upload_df_step4 = pd.read_excel(uploaded_file_step4, engine='openpyxl', dtype={'Sequence': str})
         else:
             upload_df_step4 = pd.read_csv(uploaded_file_step4, dtype={'Sequence': str})
+
+        if 'Serial_Number' not in upload_df_step4.columns:
+            upload_df_step4['Serial_Number'] = ''
+        upload_df_step4['Serial_Number'] = upload_df_step4['Serial_Number'].fillna('')
 
         st.success(f"File '{uploaded_file_step4.name}' uploaded successfully!")
         st.dataframe(upload_df_step4.head(), use_container_width=True)
@@ -599,7 +626,6 @@ elif st.session_state.step == 5:
     units_completed = st.session_state.units_completed.copy()
 
     # load Worker List 
-    worker_url = "https://raw.githubusercontent.com/JieXiong0111/TimeData_Processing/main/Worker%20List.xlsx"
     df_worker = pd.read_excel(worker_url, engine='openpyxl')
     
     #data processing
@@ -728,6 +754,61 @@ elif st.session_state.step == 5:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     
+    # ------------------- Serial Number Report -------------------
+    st.divider()
+    st.subheader("Serial Number Report")
+
+    sn_df = df_dur[df_dur['Serial_Number'].notna() & (df_dur['Serial_Number'] != '')].copy()
+    sn_df = sn_df[sn_df['EndTime'].notna()].copy()
+    sn_df['Duration_Hours'] = ((sn_df['EndTime'] - sn_df['StartTime']).dt.total_seconds() / 3600).round(2)
+
+    if sn_df.empty:
+        st.info("No serial number entries found in this dataset.")
+    else:
+        sn_report = (
+            sn_df.groupby(['Serial_Number', 'Job_Number', 'Sequence', 'Name', 'Date'])['Duration_Hours']
+            .sum()
+            .round(2)
+            .reset_index()
+        )
+        sn_report.sort_values(by=['Serial_Number', 'Date', 'Name'], inplace=True)
+
+        sn_report_filtered = sn_report[
+            (sn_report['Name'] == selected_name) &
+            (sn_report['Date'] == selected_date)
+        ].reset_index(drop=True)
+
+        st.dataframe(
+            sn_report_filtered,
+            use_container_width=True,
+            column_config={
+                "Serial_Number": st.column_config.TextColumn("Serial Number", width="medium"),
+                "Job_Number": st.column_config.TextColumn("Job Number", width="small"),
+                "Sequence": st.column_config.TextColumn("Sequence", width="small"),
+                "Duration_Hours": st.column_config.NumberColumn("Duration (Hours)", format="%.2f"),
+                "Date": st.column_config.DateColumn("Date"),
+            }
+        )
+
+        col_sn_spacer, col_sn_download = st.columns([5.5, 1])
+        with col_sn_download:
+            sn_output = BytesIO()
+            sn_report.to_excel(sn_output, index=False, engine='openpyxl')
+            sn_output.seek(0)
+
+            start = st.session_state.get("start_date", date.today())
+            end = st.session_state.get("end_date", date.today())
+
+            sn_file_name = f"SerialNumber_Report_{start}.xlsx" if start == end else f"SerialNumber_Report_{start}_to_{end}.xlsx"
+
+            st.download_button(
+                label="Download SN Report",
+                data=sn_output.getvalue(),
+                file_name=sn_file_name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_sn_report"
+            )
+
     col_spacer, col_misc = st.columns([8, 2])
     with col_misc:
         if st.button("➡️ Get MISC", key="to_step6_button"):
